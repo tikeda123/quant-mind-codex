@@ -11,6 +11,10 @@ from apps.paper_library.components.citation import (
     annotation_kind_label,
     render_citation,
 )
+from apps.paper_library.components.paper_card import (
+    display_authors,
+    display_publication,
+)
 from apps.paper_library.models import (
     ReadingStatus,
     TranslationReviewStatus,
@@ -54,7 +58,8 @@ def render(service: PaperLibraryAppService) -> None:
     state = service.state.get_state(source_id)
     st.header(state.display_title or source.title or "タイトル未取得")
     st.caption(
-        f"{', '.join(source.authors) or '著者未取得'} · "
+        f"{display_authors(source.authors, state.display_authors)} · "
+        f"{display_publication(source.published_at, state.display_publication)} · "
         f"{len(source.parsed.pages)} pages · {details.health} · "
         f"source {str(source.id)[:12]}"
     )
@@ -554,6 +559,18 @@ def render(service: PaperLibraryAppService) -> None:
             display_title = st.text_input(
                 "個人表示名", value=state.display_title or ""
             )
+            display_authors_text = st.text_area(
+                "表示用著者（1行1名）",
+                value="\n".join(state.display_authors),
+                max_chars=10_000,
+                help="原典で確認した著者名を、表記を変えずに入力します。",
+            )
+            display_publication_text = st.text_input(
+                "表示用公開情報",
+                value=state.display_publication or "",
+                max_chars=200,
+                help="Mar. 1952など、原典にある精度と表記を保ちます。",
+            )
             reading_status = st.selectbox(
                 "読書状態",
                 ["inbox", "reading", "read", "archived"],
@@ -584,6 +601,12 @@ def render(service: PaperLibraryAppService) -> None:
                     source_id,
                     expected_version=state.version,
                     display_title=display_title,
+                    display_authors=tuple(
+                        author.strip()
+                        for author in display_authors_text.splitlines()
+                        if author.strip()
+                    ),
+                    display_publication=display_publication_text,
                     reading_status=cast(ReadingStatus, reading_status),
                     starred=starred,
                     personal_memo=memo,

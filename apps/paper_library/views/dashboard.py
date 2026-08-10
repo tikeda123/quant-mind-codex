@@ -2,6 +2,11 @@
 
 import streamlit as st
 
+from apps.paper_library.components.paper_card import (
+    display_authors,
+    display_publication,
+    display_title,
+)
 from apps.paper_library.service import PaperLibraryAppService
 
 
@@ -34,9 +39,13 @@ def render(service: PaperLibraryAppService) -> None:
         return
     st.subheader("最近登録した論文")
     for entry in page.entries[:10]:
-        title = entry.title or "タイトル未取得"
+        state = service.state.get_state(entry.source_revision_id)
+        title = display_title(entry, state.display_title)
         st.write(
-            f"- {title} · {entry.page_count} pages · {entry.health} · "
+            f"- {title} · "
+            f"{display_authors(entry.authors, state.display_authors)} · "
+            f"{display_publication(entry.published_at, state.display_publication)}"
+            f" · {entry.page_count} pages · {entry.health} · "
             f"{str(entry.source_revision_id)[:12]}"
         )
     st.subheader("確認が必要な項目")
@@ -44,8 +53,9 @@ def render(service: PaperLibraryAppService) -> None:
     if not attention:
         st.success("現在、要確認または破損として検出された論文はありません。")
     for entry in attention:
+        state = service.state.get_state(entry.source_revision_id)
         st.warning(
-            f"{entry.title or 'タイトル未取得'}: "
+            f"{display_title(entry, state.display_title)}: "
             f"{', '.join(entry.health_reasons)}"
         )
     active = []

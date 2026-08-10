@@ -1,6 +1,7 @@
 """SQLite sidecar for mutable human organization state only."""
 
 import hashlib
+import json
 import sqlite3
 import threading
 import warnings
@@ -23,7 +24,7 @@ from apps.paper_library.models import (
     VisualAnnotationReviewStatus,
 )
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 _MAX_VISUAL_ANNOTATION_BYTES = 20 * 1024 * 1024
 _MAX_VISUAL_ANNOTATION_PIXELS = 40_000_000
 _IMAGE_FORMAT_MEDIA_TYPES = {
@@ -41,6 +42,8 @@ CREATE TABLE ui_meta (
 CREATE TABLE paper_user_state (
     source_revision_id TEXT PRIMARY KEY,
     display_title TEXT,
+    display_authors_text TEXT NOT NULL DEFAULT '[]',
+    display_publication TEXT,
     reading_status TEXT NOT NULL
         CHECK (reading_status IN ('inbox', 'reading', 'read', 'archived')),
     starred INTEGER NOT NULL CHECK (starred IN (0, 1)),
@@ -207,6 +210,7 @@ class PaperLibraryStateStore:
                 "INSERT INTO ui_meta (key, value) VALUES ('schema_version', ?)",
                 (str(_SCHEMA_VERSION),),
             )
+            version = _SCHEMA_VERSION
         elif version == 1:
             self._db.executescript(
                 f"BEGIN IMMEDIATE;\n{_MIGRATION_1_TO_2_SQL}\n"
@@ -216,13 +220,46 @@ class PaperLibraryStateStore:
         if version == 2:
             self._db.executescript(
                 f"BEGIN IMMEDIATE;\n{_MIGRATION_2_TO_3_SQL}\n"
-                f"PRAGMA user_version = {_SCHEMA_VERSION};\nCOMMIT;"
+                "PRAGMA user_version = 3;\nCOMMIT;"
             )
-        elif version not in (0, _SCHEMA_VERSION):
+            version = 3
+        if version == 3:
+            self._migrate_3_to_4()
+            version = 4
+        if version != _SCHEMA_VERSION:
             self._db.close()
             raise RuntimeError(
                 f"unsupported sidecar schema {version}; expected {_SCHEMA_VERSION}"
             )
+
+    def _migrate_3_to_4(self) -> None:
+        """Add human-reviewed bibliographic display fields atomically."""
+        columns = {
+            str(row["name"])
+            for row in self._db.execute(
+                "PRAGMA table_info(paper_user_state)"
+            ).fetchall()
+        }
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            if "display_authors_text" not in columns:
+                self._db.execute(
+                    "ALTER TABLE paper_user_state ADD COLUMN "
+                    "display_authors_text TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "display_publication" not in columns:
+                self._db.execute(
+                    "ALTER TABLE paper_user_state ADD COLUMN "
+                    "display_publication TEXT"
+                )
+            self._db.execute(
+                "UPDATE ui_meta SET value = '4' WHERE key = 'schema_version'"
+            )
+            self._db.execute("PRAGMA user_version = 4")
+            self._db.execute("COMMIT")
+        except Exception:
+            self._db.execute("ROLLBACK")
+            raise
 
     @staticmethod
     def _validate_text(
@@ -327,9 +364,10 @@ class PaperLibraryStateStore:
         self._db.execute(
             """
             INSERT INTO paper_user_state (
-                source_revision_id, display_title, reading_status, starred,
-                personal_memo, last_opened_page, version, created_at, updated_at
-            ) VALUES (?, NULL, 'inbox', 0, '', NULL, 1, ?, ?)
+                source_revision_id, display_title, display_authors_text,
+                display_publication, reading_status, starred, personal_memo,
+                last_opened_page, version, created_at, updated_at
+            ) VALUES (?, NULL, '[]', NULL, 'inbox', 0, '', NULL, 1, ?, ?)
             ON CONFLICT(source_revision_id) DO NOTHING
             """,
             (str(source_revision_id), now, now),
@@ -377,6 +415,15 @@ class PaperLibraryStateStore:
                     if row["display_title"] is not None
                     else None
                 ),
+                display_authors=tuple(
+                    str(author)
+                    for author in json.loads(str(row["display_authors_text"]))
+                ),
+                display_publication=(
+                    str(row["display_publication"])
+                    if row["display_publication"] is not None
+                    else None
+                ),
                 reading_status=cast(ReadingStatus, str(row["reading_status"])),
                 starred=bool(row["starred"]),
                 personal_memo=str(row["personal_memo"]),
@@ -402,6 +449,8 @@ class PaperLibraryStateStore:
         *,
         expected_version: int,
         display_title: str | None,
+        display_authors: tuple[str, ...],
+        display_publication: str | None,
         reading_status: ReadingStatus,
         starred: bool,
         personal_memo: str,
@@ -416,6 +465,30 @@ class PaperLibraryStateStore:
         )
         if display_title == "":
             display_title = None
+        normalized_authors: list[str] = []
+        seen_authors: set[str] = set()
+        for author in display_authors:
+            normalized_author = self._validate_text(
+                author,
+                name="display author",
+                maximum=200,
+                allow_empty=False,
+            )
+            assert normalized_author is not None
+            author_key = normalized_author.casefold()
+            if author_key not in seen_authors:
+                seen_authors.add(author_key)
+                normalized_authors.append(normalized_author)
+        if len(normalized_authors) > 50:
+            raise ValueError("a paper may have at most 50 display authors")
+        display_publication = self._validate_text(
+            display_publication,
+            name="display publication",
+            maximum=200,
+            allow_empty=True,
+        )
+        if display_publication == "":
+            display_publication = None
         memo = self._validate_text(
             personal_memo,
             name="personal memo",
@@ -436,13 +509,20 @@ class PaperLibraryStateStore:
             cursor = self._db.execute(
                 """
                 UPDATE paper_user_state
-                SET display_title = ?, reading_status = ?, starred = ?,
+                SET display_title = ?, display_authors_text = ?,
+                    display_publication = ?, reading_status = ?, starred = ?,
                     personal_memo = ?, last_opened_page = ?,
                     version = version + 1, updated_at = ?
                 WHERE source_revision_id = ? AND version = ?
                 """,
                 (
                     display_title,
+                    json.dumps(
+                        normalized_authors,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                    display_publication,
                     reading_status,
                     int(starred),
                     memo,

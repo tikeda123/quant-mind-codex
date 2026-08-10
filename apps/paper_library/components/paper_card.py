@@ -1,5 +1,6 @@
 """Compact paper identity display."""
 
+from datetime import datetime
 from pathlib import PurePosixPath
 
 import streamlit as st
@@ -20,10 +21,31 @@ def display_title(entry: PaperCatalogEntry, override: str | None = None) -> str:
     return f"タイトル未取得 · {str(entry.source_revision_id)[:12]}"
 
 
+def display_authors(
+    canonical_authors: tuple[str, ...],
+    override: tuple[str, ...] = (),
+) -> str:
+    """Prefer human-reviewed author labels without mutating canonical facts."""
+    return ", ".join(override or canonical_authors) or "著者未取得"
+
+
+def display_publication(
+    canonical_published_at: datetime | None,
+    override: str | None = None,
+) -> str:
+    """Preserve a reviewed partial publication label when no exact date exists."""
+    if override:
+        return override
+    if canonical_published_at is not None:
+        return canonical_published_at.date().isoformat()
+    return "未取得"
+
+
 def render_paper_card(entry: PaperCatalogEntry) -> None:
     """Render one compact source-revision identity card."""
     st.subheader(display_title(entry))
     st.caption(
-        f"{', '.join(entry.authors) or '著者未取得'} · "
+        f"{display_authors(entry.authors)} · "
+        f"{display_publication(entry.published_at)} · "
         f"{entry.page_count} pages · {health_label(entry.health)}"
     )

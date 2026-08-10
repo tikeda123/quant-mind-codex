@@ -42,6 +42,8 @@ class PaperLibraryStateStoreTests(unittest.TestCase):
             source_id,
             expected_version=initial.version,
             display_title="My paper",
+            display_authors=("First Author", "Second Author"),
+            display_publication="Mar. 1952",
             reading_status="reading",
             starred=True,
             personal_memo="Next: reproduce the experiment.",
@@ -50,11 +52,17 @@ class PaperLibraryStateStoreTests(unittest.TestCase):
         )
         self.assertEqual(updated.version, 2)
         self.assertTrue(updated.starred)
+        self.assertEqual(
+            updated.display_authors, ("First Author", "Second Author")
+        )
+        self.assertEqual(updated.display_publication, "Mar. 1952")
         with self.assertRaises(StateConflictError):
             self.store.update_state(
                 source_id,
                 expected_version=initial.version,
                 display_title=None,
+                display_authors=(),
+                display_publication=None,
                 reading_status="read",
                 starred=False,
                 personal_memo="",
@@ -108,6 +116,8 @@ class PaperLibraryStateStoreTests(unittest.TestCase):
                 source_id,
                 expected_version=state.version,
                 display_title=None,
+                display_authors=(),
+                display_publication=None,
                 reading_status="inbox",
                 starred=False,
                 personal_memo="",
@@ -119,6 +129,8 @@ class PaperLibraryStateStoreTests(unittest.TestCase):
                 source_id,
                 expected_version=state.version,
                 display_title=None,
+                display_authors=(),
+                display_publication=None,
                 reading_status="inbox",
                 starred=False,
                 personal_memo="x" * 20_001,
@@ -228,7 +240,7 @@ class PaperLibraryStateStoreTests(unittest.TestCase):
         self.assertEqual(self.store.list_visual_annotations(source_id), ())
         with sqlite3.connect(self.path) as database:
             self.assertEqual(
-                database.execute("PRAGMA user_version").fetchone()[0], 3
+                database.execute("PRAGMA user_version").fetchone()[0], 4
             )
 
     def test_translation_page_review_round_trip_and_conflict(self) -> None:
@@ -270,7 +282,77 @@ class PaperLibraryStateStoreTests(unittest.TestCase):
         self.assertEqual(review.review_status, "unreviewed")
         with sqlite3.connect(self.path) as database:
             self.assertEqual(
-                database.execute("PRAGMA user_version").fetchone()[0], 3
+                database.execute("PRAGMA user_version").fetchone()[0], 4
+            )
+
+    def test_schema_three_adds_bibliographic_display_fields(self) -> None:
+        source_id = uuid4()
+        initial = self.store.get_state(source_id)
+        titled = self.store.update_state(
+            source_id,
+            expected_version=initial.version,
+            display_title="Portfolio Selection",
+            display_authors=(),
+            display_publication=None,
+            reading_status="inbox",
+            starred=False,
+            personal_memo="",
+            last_opened_page=1,
+            page_count=16,
+        )
+        self.store.close()
+        with sqlite3.connect(self.path) as database:
+            database.executescript(
+                """
+                ALTER TABLE paper_user_state RENAME TO paper_user_state_v4;
+                CREATE TABLE paper_user_state (
+                    source_revision_id TEXT PRIMARY KEY,
+                    display_title TEXT,
+                    reading_status TEXT NOT NULL,
+                    starred INTEGER NOT NULL,
+                    personal_memo TEXT NOT NULL,
+                    last_opened_page INTEGER,
+                    version INTEGER NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+                INSERT INTO paper_user_state (
+                    source_revision_id, display_title, reading_status, starred,
+                    personal_memo, last_opened_page, version, created_at,
+                    updated_at
+                )
+                SELECT source_revision_id, display_title, reading_status,
+                    starred, personal_memo, last_opened_page, version,
+                    created_at, updated_at
+                FROM paper_user_state_v4;
+                DROP TABLE paper_user_state_v4;
+                PRAGMA user_version = 3;
+                UPDATE ui_meta SET value = '3' WHERE key = 'schema_version';
+                """
+            )
+        self.store = PaperLibraryStateStore(self.path)
+
+        migrated = self.store.get_state(source_id)
+        self.assertEqual(migrated.display_title, titled.display_title)
+        self.assertEqual(migrated.display_authors, ())
+        self.assertIsNone(migrated.display_publication)
+        updated = self.store.update_state(
+            source_id,
+            expected_version=migrated.version,
+            display_title=migrated.display_title,
+            display_authors=("Harry Markowitz",),
+            display_publication="Mar. 1952",
+            reading_status=migrated.reading_status,
+            starred=migrated.starred,
+            personal_memo=migrated.personal_memo,
+            last_opened_page=migrated.last_opened_page,
+            page_count=16,
+        )
+        self.assertEqual(updated.display_authors, ("Harry Markowitz",))
+        self.assertEqual(updated.display_publication, "Mar. 1952")
+        with sqlite3.connect(self.path) as database:
+            self.assertEqual(
+                database.execute("PRAGMA user_version").fetchone()[0], 4
             )
 
 

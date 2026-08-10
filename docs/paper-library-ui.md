@@ -35,7 +35,7 @@ remote hosting are intentionally unsupported.
 |---|---|
 | Dashboard | Understand saved, search-ready, attention, broken, unread, annotated, currently reading, and starred papers. |
 | Library | Filter title/author/URI, source, health, reading state, star, tag, and collection; sort and page through sources. |
-| Paper detail | Read summaries, typed annotations, and page-aligned Japanese translations; compare English/Japanese pages; review translation pages; open exact citations; add separately labeled explanatory images; render one highlighted PDF page; download the hash-checked PDF/JSON; inspect versions; and manage personal state. |
+| Paper detail | Read summaries, typed annotations, and page-aligned Japanese translations; compare English/Japanese pages; review translation pages; open exact citations; add separately labeled explanatory images; render one highlighted PDF page; download the hash-checked PDF/JSON; inspect versions; and manage personal state and reviewed bibliographic display labels. |
 | Search | Embed one Japanese or English query locally, pre-filter sidecar candidates, inspect matched projection text and similarity, and return to source evidence. |
 | Intake | Explicitly prepare a PDF/URL, hand files to interactive Codex, reload and validate `draft.json`, preview, and separately confirm registration. |
 | Audit | Inspect counts, registrations, model identity, fast health, optional read-only deep validation, JSON exports, and sidecar orphans. |
@@ -50,9 +50,12 @@ confidence scores.
 
 - The canonical database owns exact PDF bytes, sources, artifacts, vectors,
   registration audit, and catalog projections.
-- The sidecar owns display title, reading state, star, personal memo, last page,
-  tags, collections, and explanatory image annotations. Sidecar writes never
-  touch canonical SQLite bytes.
+- The sidecar owns display title, reviewed author labels, a publication label,
+  reading state, star, personal memo, last page, tags, collections, and
+  explanatory image annotations. Sidecar writes never touch canonical SQLite
+  bytes. Author labels use one author per line. The publication label preserves
+  the source's available precision, such as `Mar. 1952`, instead of inventing a
+  day for a month-only citation.
 - A visual annotation stores the original PNG, JPEG, or WebP bytes (up to 20
   MB and 40 megapixels), caption, alternative text, creator/provenance, an
   optional link to a canonical text annotation, and a human review label. It

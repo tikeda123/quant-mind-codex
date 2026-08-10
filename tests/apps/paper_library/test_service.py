@@ -95,6 +95,8 @@ class PaperLibraryAppServiceTests(unittest.TestCase):
             result.source_revision.id,
             expected_version=state.version,
             display_title="Personal title",
+            display_authors=("Personal Author",),
+            display_publication="Mar. 1952",
             reading_status="reading",
             starred=True,
             personal_memo="Unverified personal memo",
@@ -106,12 +108,55 @@ class PaperLibraryAppServiceTests(unittest.TestCase):
         ).hexdigest()
 
         self.assertEqual(before, after)
+        updated_state = self.service.state.get_state(result.source_revision.id)
+        self.assertEqual(updated_state.display_authors, ("Personal Author",))
+        self.assertEqual(updated_state.display_publication, "Mar. 1952")
         self.assertEqual(
             self.service.get_paper_details(
                 result.source_revision.id,
                 registration_id=record.registration_id,
             ).source,
             result.source_revision,
+        )
+
+    def test_paper_detail_uses_reviewed_bibliographic_display_fields(
+        self,
+    ) -> None:
+        result = build_annotated_paper_result()
+        self.service.register(result)
+        state = self.service.state.get_state(result.source_revision.id)
+        self.service.state.update_state(
+            result.source_revision.id,
+            expected_version=state.version,
+            display_title="Portfolio Selection",
+            display_authors=("Harry Markowitz",),
+            display_publication="Mar. 1952",
+            reading_status=state.reading_status,
+            starred=state.starred,
+            personal_memo=state.personal_memo,
+            last_opened_page=1,
+            page_count=2,
+        )
+
+        app = AppTest.from_function(
+            _render_paper_detail,
+            args=(self.service, str(result.source_revision.id)),
+            default_timeout=20,
+        ).run()
+
+        self.assertEqual(list(app.exception), [])
+        self.assertIn(
+            "Portfolio Selection", [item.value for item in app.header]
+        )
+        self.assertTrue(
+            any(
+                "Harry Markowitz · Mar. 1952" in item.value
+                for item in app.caption
+            )
+        )
+        self.assertIn(
+            "Harry Markowitz",
+            [item.value for item in app.text_area],
         )
 
     def test_visual_annotation_validates_link_and_stays_in_sidecar(

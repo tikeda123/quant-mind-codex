@@ -18,6 +18,8 @@ class PaperUserState(BaseModel):
 
     source_revision_id: UUID
     display_title: str | None = None
+    display_authors: tuple[str, ...] = ()
+    display_publication: str | None = None
     reading_status: ReadingStatus = "inbox"
     starred: bool = False
     personal_memo: str = ""

@@ -4,7 +4,11 @@ from typing import Literal, cast
 
 import streamlit as st
 
-from apps.paper_library.components.paper_card import display_title
+from apps.paper_library.components.paper_card import (
+    display_authors,
+    display_publication,
+    display_title,
+)
 from apps.paper_library.components.status import health_label
 from apps.paper_library.models import ReadingStatus
 from apps.paper_library.service import PaperLibraryAppService
@@ -103,11 +107,13 @@ def render(service: PaperLibraryAppService) -> None:
             {
                 "★": "★" if state.starred else "",
                 "タイトル": display_title(entry, state.display_title),
-                "著者": ", ".join(entry.authors),
-                "公開日": (
-                    entry.published_at.date().isoformat()
-                    if entry.published_at
-                    else "未取得"
+                "著者": display_authors(
+                    entry.authors,
+                    state.display_authors,
+                ),
+                "公開日": display_publication(
+                    entry.published_at,
+                    state.display_publication,
                 ),
                 "種別": entry.source_kind,
                 "pages": entry.page_count,
