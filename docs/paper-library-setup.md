@@ -5,6 +5,14 @@ registers the first source-backed paper, adds Japanese reading material, and
 keeps the resulting databases durable. It also explains how to move an
 existing temporary or demo database into a persistent location.
 
+For screen-by-screen daily operation, Codex request examples, bibliographic
+metadata handling, and troubleshooting in Japanese, start with the
+[日本語運用マニュアル](paper-library-manual-ja.md). The original upstream
+repository is [`LLMQuant/quant-mind`](https://github.com/LLMQuant/quant-mind),
+and this local application is maintained in the
+[`tikeda123/quant-mind-codex`](https://github.com/tikeda123/quant-mind-codex)
+fork.
+
 The Paper Library path does not require an external LLM API key. Codex is used
 interactively in the checkout and communicates with the deterministic Python
 application only through explicit files.

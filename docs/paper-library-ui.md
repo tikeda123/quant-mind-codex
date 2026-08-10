@@ -10,6 +10,8 @@ For the complete new-database procedure, including first-paper registration,
 translation, image annotations, verification, migration from a temporary
 database, and paired SQLite backup, follow the
 [database construction guide](paper-library-setup.md).
+For the screen-by-screen human workflow and troubleshooting in Japanese, use
+the [日本語運用マニュアル](paper-library-manual-ja.md).
 
 ## Install and Start
 

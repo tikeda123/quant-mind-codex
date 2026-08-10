@@ -1,357 +1,263 @@
-
 <p align="center">
-  <img src="assets/quantmind-wordmark.png" width="240">
+  <img src="assets/quantmind-wordmark.png" width="240" alt="QuantMind">
 </p>
 
 <p align="center">
-  <img src="assets/quant-mind.png" width="400">
+  <img src="assets/quant-mind.png" width="400" alt="QuantMind logo">
+</p>
+
+<h1 align="center">QuantMind Codex Paper Library</h1>
+
+<p align="center">
+  <b>原典・ページ根拠・日本語訳・説明画像をローカルで管理する、Codex対話型の論文データベース</b>
 </p>
 
 <p align="center">
-  <b>Transform Financial Knowledge into Actionable Intelligence</b>
-</p>
-<p align="center">
-  <b>This fork: a local, Codex-operated paper library with page evidence, Japanese reading aids, and API-key-free semantic search</b>
-</p>
-<p align="center">
-  <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License">
-  </a>
-  <a href="https://python.org">
-    <img src="https://img.shields.io/badge/Python-3.10+-blue.svg" alt="Python Version">
-  </a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
+  <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.10+-blue.svg" alt="Python Version"></a>
   <img src="https://img.shields.io/badge/Codex-interactive-412991.svg" alt="Codex interactive">
-  <img src="https://img.shields.io/badge/Paper_Library_LLM_API_key-not_required-success.svg" alt="Paper Library requires no external LLM API key">
+  <img src="https://img.shields.io/badge/Paper_Library-API_key_free-success.svg" alt="Paper Library requires no external LLM API key">
 </p>
+
 <p align="center">
-  <a href="#-codex-paper-library-this-fork">Codex Paper Library</a> •
-  <a href="docs/paper-library-setup.md">Build Database</a> •
-  <a href="#-knowledge-engineering">Knowledge Engineering</a> •
-  <a href="#-the-vision">The Vision</a> •
-  <a href="#-quick-start">Quick Start</a> •
-  <a href="#-evaluation-in-design">Evaluation</a> •
-  <a href="#-in-production-llmquant-data">In Production</a> •
-  <a href="#%EF%B8%8F-roadmap">Roadmap</a> •
-  <a href="#-contributing">Contributing</a>
+  <a href="#オリジナルとの違い">オリジナルとの差分</a> •
+  <a href="#最短セットアップ">セットアップ</a> •
+  <a href="docs/paper-library-manual-ja.md">日本語マニュアル</a> •
+  <a href="docs/paper-library-setup.md">DB構築・移行</a> •
+  <a href="#上流から継承するquantmindライブラリ">継承ライブラリ</a>
 </p>
 
+## このリポジトリについて
 
-This repository is the **Codex-focused fork** [`tikeda123/quant-mind-codex`](https://github.com/tikeda123/quant-mind-codex). It keeps the upstream [QuantMind](https://github.com/LLMQuant/quant-mind) knowledge library and adds a human-operated, local Paper Library in which Codex prepares cited research artifacts through explicit files rather than through an application API.
+このリポジトリは、LLMQuantが公開するQuantMindを基礎に、ローカル論文DBとCodex対話型の運用機能を追加したforkです。
 
-QuantMind is an information processor for quantitative finance: it refines raw financial information — papers, news, filings — into structured financial knowledge that downstream retrieval and reasoning can trust. Every piece of knowledge is typed, keeps its citation, and knows its timestamp, so it persists and time-queries standalone.
+- **このfork:** [tikeda123/quant-mind-codex](https://github.com/tikeda123/quant-mind-codex)
+- **オリジナル（upstream）:** [LLMQuant/quant-mind](https://github.com/LLMQuant/quant-mind)
 
-The people who build these refinement flows are increasingly agents — coding agents, with humans behind them. So the repository is designed agent-oriented: you open the checkout, describe the pipeline you want, and an agent builds it here against the repo's contracts, skills, and deterministic verification. It is also a perfectly good importable Python library.
+オリジナルは、OpenAI Agents SDK上で金融知識を抽出・構造化・検索するPythonライブラリです。このforkはそのデータモデル、PaperFlow、LocalKnowledgeLibrary、RAG、開発ハーネスを継承し、人間が論文を継続的に読んで活用するためのローカルアプリケーションを追加しています。
 
-### 📚 Codex Paper Library (This Fork)
+> [!IMPORTANT]
+> 「APIキー不要」は、このforkで追加したローカルPaper Libraryの経路を指します。PythonやStreamlitからCodexをAPIとして呼びません。上流から継承したOpenAI Agents SDK利用フローは、選択したモデルプロバイダの設定を別途必要とする場合があります。
 
-> **日本語概要:** このforkは、PDFまたは公開HTTPS URLから論文を取り込み、Codexとの対話でページ根拠付き要約・注釈と全ページ日本語訳を作成し、原典・生成物・ローカル埋め込みをSQLiteへ保存するローカル論文DBです。PythonやStreamlitからCodexをAPIとして呼び出すことはありません。
+## オリジナルとの違い
 
-The main fork-specific surface is [`apps/paper_library/`](apps/paper_library/): a loopback-only Streamlit workbench for building and using a source-backed paper collection. Codex is the interactive operator; Python is limited to deterministic preparation, validation, local embedding, persistence, and retrieval.
+このforkの中心は [`apps/paper_library/`](apps/paper_library/) です。単なるREADME変更ではなく、論文の取り込みから根拠確認、翻訳、管理、検索、DB移行までを追加・拡張しています。
+
+| 項目 | オリジナル `LLMQuant/quant-mind` | このfork `tikeda123/quant-mind-codex` |
+|---|---|---|
+| 主目的 | 定量金融向けの知識抽出・検索ライブラリ | 左記を継承し、人間が使うローカル論文DBを追加 |
+| 主な操作方法 | Python APIとエージェント開発ハーネス | Streamlit管理UIと対話中のCodexによる明示的なファイル受け渡し |
+| Codex連携 | Paper Library固有の運用契約なし | `source.pdf` / `manifest.json` / draft JSONを境界にして対話的に処理 |
+| LLM API | Agents SDKフローは構成したプロバイダを利用 | Paper LibraryはCodex/OpenAIをPythonから呼ばず、外部LLM APIキー不要 |
+| 論文入力 | PaperFlowの型付き入力 | UIからローカルPDFまたは公開HTTPS PDFをPrepare可能 |
+| 根拠管理 | source-first、ページ対応artifact | PDF hash、ページ本文、exact quote、型付き注釈、登録監査を厳密に検証 |
+| 日本語対応 | Paper Library用の全ページ翻訳管理なし | 全物理ページの日本語訳を別のimmutable artifactとして保存し、ページ単位で原文照合状態を管理 |
+| 説明画像 | 論文管理UIでの画像注釈なし | PNG/JPEG/WebP、和文説明、出典、確認状態をsidecarへ保存 |
+| 書誌・読書管理 | canonical knowledgeの保存と検索 | 人間が確認したタイトル・著者・公開情報、星、読書状態、タグ、コレクション、メモを管理 |
+| 埋め込み | `LocalKnowledgeLibrary`のprivate provider seamと既定provider | private seamを保ったまま、固定revisionの `intfloat/multilingual-e5-small` をローカルCPUで利用 |
+| 検索 | canonical knowledgeのsemantic retrieval | 日本語/英語クエリ、summary/chunk、読書状態・タグ・コレクション等の絞り込み |
+| UI | Paper Library管理画面なし | ダッシュボード、蔵書、論文詳細、検索、取り込み、監査の6画面 |
+| 永続化 | canonical SQLite | canonical SQLiteに加えて、個人情報と画像を分離したUI sidecar SQLite |
+| 移行・バックアップ | fork固有のDB pair移行なし | 全table・row・BLOBを照合し、2つのSQLiteを一組で移行・受け入れ確認 |
+| 自動運転 | 汎用 `batch_run` はライブラリ機能として存在 | Paper Libraryは人間確認を前提とし、Codex pollingや無人定期バッチを持たない |
+
+### このforkで追加・拡張した主な場所
+
+| 場所 | 変更内容 |
+|---|---|
+| [`apps/paper_library/`](apps/paper_library/) | loopback限定のStreamlit管理UI、canonical/sidecar連携 |
+| [`quantmind/knowledge/paper.py`](quantmind/knowledge/paper.py) | cited annotation、登録記録、全ページ日本語訳などのcanonical model |
+| [`quantmind/flows/paper/`](quantmind/flows/paper/) | Codexが作成したdraftを決定論的に検証・finalizeする処理 |
+| [`quantmind/library/`](quantmind/library/) | 論文artifact、翻訳、監査、catalog、固定ローカル埋め込みのSQLite保存・検索 |
+| [`scripts/`](scripts/) | PDF/翻訳準備、モデルcache、UI/E2E検証、DB pair移行 |
+| [`docs/`](docs/) | 構築、運用、UI、永続化、移行の利用者向けマニュアル |
+| [`tests/`](tests/) | 取り込み、検証失敗、原子性、翻訳、UI state、migrationを含むoffline test |
+
+上流との差分をGitで確認する場合は、次のコマンドを使います。`origin` はオリジナル、`codex` はこのforkを指す構成です。
+
+```bash
+git fetch --prune origin
+git fetch --prune codex
+git log --oneline origin/master..master
+git diff --stat origin/master..master
+git diff --name-status origin/master..master
+```
+
+## Paper Libraryでできること
+
+- PDF uploadまたは公開HTTPS PDF URLから原典を取り込み、PDFそのものとSHA-256を保存する。
+- Codexとの対話で、ページ根拠付き要約と `source_fact` / `codex_interpretation` 注釈を作る。
+- exact quote、ページ番号、chunk参照、原典hashが一致するdraftだけを登録する。
+- 英文論文の全ページ日本語訳を保存し、英語原文との対訳表示とページ別レビューを行う。
+- 論文の理解を補助する説明画像を、日本語の見出し・代替テキスト・出典・確認状態とともに管理する。
+- 人間が確認したタイトル、著者、公開情報、星、読書状態、タグ、コレクション、メモを管理する。
+- 固定ローカルモデルで日本語/英語の意味検索を行い、検索結果から原典ページへ戻る。
+- canonical DBとsidecar DBを完全性検査付きで一組として移行・バックアップする。
 
 ```mermaid
 flowchart LR
-    A["Text PDF or public HTTPS PDF"] --> B["Prepare source.pdf + manifest.json"]
-    B --> C["Interactive Codex writes cited draft + Japanese translation"]
-    C --> D["Validate PDF hash, pages, and exact quotes"]
-    D --> E["Atomically register canonical artifacts in SQLite"]
-    E --> F["Search locally and manage papers in the loopback UI"]
+    A["PDF upload / 公開HTTPS PDF"] --> B["Prepare: source.pdf + manifest.json"]
+    B --> C["人間がCodexへ作業を依頼"]
+    C --> D["draft.json / translation_draft.json"]
+    D --> E["hash・ページ・引用を決定論的に検証"]
+    E --> F["canonical SQLiteへ原子的に登録"]
+    F --> G["ローカル意味検索・日本語閲覧・注釈管理"]
+    G --> H["監査・pair migration・backup"]
 ```
 
-| Area | Implemented behavior |
+## Codexとの役割分担
+
+Codexは、このcheckoutで人間と対話しながら要約、注釈、日本語訳、画像説明の文案を作ります。アプリケーションはCodexを自動起動せず、Codex APIも呼びません。
+
+| Codexが行うこと | Python/UIが行うこと |
 |---|---|
-| Source preservation | Stores the exact PDF bytes, page-aware extracted text, hashes, source metadata, and registration history. |
-| Codex research handoff | Uses `source.pdf`, `manifest.json`, and strictly validated JSON drafts. Codex creates cited summaries and typed `source_fact` / `codex_interpretation` annotations without inventing IDs, pages, chunks, or quotes. |
-| Japanese reading | Stores an immutable Japanese translation for every physical English page, with per-page human review state kept separately. The English source remains the citation authority. |
-| Explanatory images | Attaches PNG, JPEG, or WebP visual annotations with Japanese caption and alternative-text explanations, provenance, optional links to text annotations, and review status. Images are reading aids, not source evidence. |
-| Local semantic search | Uses one fixed revision of `intfloat/multilingual-e5-small` on local CPU. Registration embeds document projections; search embeds one query and performs local similarity ranking. |
-| Human management | Provides Dashboard, Library, Paper Detail, Search, Intake, and Audit views, plus reading state, stars, tags, collections, notes, reviewed title/author/publication labels, source downloads, and page previews. |
-| Storage boundaries | Keeps canonical source/artifact/vector data in one SQLite database and mutable personal/UI state in a separate sidecar database. Sidecar edits never rewrite canonical evidence. |
+| 原典を読んで要約・注釈・翻訳を作る | 原典PDFとmanifestを固定する |
+| 指定contractに従うJSONを書く | schema、hash、ページ、引用、参照を検証する |
+| 画像の意味を日本語で説明する | 画像bytesと人間の確認状態をsidecarへ保存する |
+| 不明な書誌情報を原典から確認する | canonicalと個人表示情報を分離して永続化する |
 
-The operational boundary is deliberate:
+実行できない、または意図的に実装していないものは、PythonからのCodex呼び出し、無人翻訳、バックグラウンドpolling、model選択UI、複数embedding backend、hybrid search、reranking、認証付きremote hostingです。
 
-- Python and Streamlit **do not invoke Codex, OpenAI, or another external LLM API**. A human asks Codex to read the staged files and write the required draft file.
-- Model weights are downloaded only by an explicit cache command. Normal registration and search use `local_files_only=True`; no Hugging Face API key is required.
-- Intake is interactive. There is no unattended batch scheduler, background Codex polling, provider registry, model-selection UI, hybrid search, reranker, or autonomous repair loop.
-- Scanned PDFs require OCR before intake. Translation is page-aligned reading assistance, and explanatory images are not included in semantic search or accepted as paper evidence.
-- Runtime PDFs, model weights, intake files, and SQLite databases are operator data outside Git history. Migrate or back up the canonical and sidecar databases as one verified pair.
-- The API-key-free guarantee applies to this local Paper Library path. Other optional QuantMind Agents SDK flows remain available and may require their configured model provider.
+## 最短セットアップ
 
-Start with the [current database construction guide](docs/paper-library-setup.md). It covers a new persistent installation, first-paper registration, Japanese translation, explanatory images, verification, migration from a temporary database, and paired SQLite backup. The [Paper Library UI guide](docs/paper-library-ui.md), [interactive registration procedure](contexts/usage/codex-paper-registration.md), [cited draft contract](contexts/usage/codex-paper-draft-v1.md), and [translation contract](contexts/usage/codex-paper-translation-v1.md) define the detailed operating rules.
-
-### 📰 News
-| 🗞️ News        | 📝 Description                                                                 |
-|----------------|-------------------------------------------------------------------------------|
-| 📚 2026-08 | Added the Codex-operated local Paper Library: cited PDF/URL intake, canonical SQLite storage, full-page Japanese translations, explanatory image annotations, fixed local multilingual search, and a six-view management UI. |
-| 🛠️ 2026-07 | Rebuilding the repo **agent-native** — contexts, skills, hooks — so a coding agent can do QuantMind-quality work inside the checkout. |
-| 🎉 Accepted at NeurIPS 2025 Workshop | Our paper **[Quant-Mind](#)** has been accepted to the **[NeurIPS 2025 GenAI in Finance Workshop](https://sites.google.com/view/neurips-25-gen-ai-in-finance/home)** !🚀 |
-| 📢 First Release on GitHub  | **Quant-Mind** is now live on GitHub — please check it out and join us! 🤗 |
-
-
-### 🧩 Knowledge Engineering
-
-**Any source → typed knowledge.**
-
-<p align="center"><img src="assets/v1-context-engineering.png" width="920" alt="any source through preprocess and flows into typed knowledge and applications"></p>
-
-*The target surface — shipping today: `PaperFlow` · `collect_news`; see Roadmap.*
-
-- **Deterministic preprocess** — `fetch` / parse / `format` + `clean` produce source-faithful values with no model in the loop, so provenance is exact and replayable.
-- **Config-driven operations** — `PaperFlow(cfg).build(input)` binds an immutable build config once and applies it per input; `collect_news` collects a replayable source window; `batch_run` fans any operation across a list of inputs. You never write `asyncio.gather` boilerplate.
-- **Typed knowledge shapes** — a `Paper` structure tree for whole documents, and flat cards for `News` / `Earnings` / `Factor` / `Thesis`. Every artifact is self-contained: it carries its own text, an `as_of` timestamp, and a light source ref, so it persists and time-queries standalone.
-- **Retrieval over that knowledge** — `rag/` (chunking + BM25 / similarity), `library/` (local persistence + meaning-based search), and `mind/` (agentic, reasoning-based retrieval). Together they serve RAG and Agentic RAG, deep research, and data-MCP serving.
-
-This is the substance shipped as the NeurIPS 2025 GenAI-in-Finance workshop paper (**arXiv:2509.21507**). The always-current statement lives in [`contexts/design/positioning.md`](contexts/design/positioning.md).
-
-### 🧠 The Vision
-
-**Harness engineering — any agent → domain specialist.**
-
-<p align="center"><img src="assets/v2-harness-engineering.png" width="920" alt="the quant-mind harness: context layer, code layer, workspace, deterministic verify, deliverables"></p>
-
-> **Don't import it. Open it.**
-
-The repository itself is the product surface — we call this **harness engineering**. Its `AGENTS.md` / `CLAUDE.md` contracts, progressive-disclosure `contexts/`, portable skills, and Claude + Codex hooks, all gated by a deterministic verify, upgrade a general coding agent into one that reliably does QuantMind-quality work. The bet: **a weak model in a good harness beats a strong model running bare.**
-
-- **Repo-level contracts** — `AGENTS.md` / `CLAUDE.md` state the always-on rules once, in one source, for every agent that opens the repo.
-- **Progressive-disclosure `contexts/`** — agent-facing pages with a Quick Summary / Contents preview, so an agent loads only the one page a task needs.
-- **Portable skills** — `quantmind-dev` ships today (contributor setup / commit / PR / component workflow), mirrored for Claude and Codex.
-- **Claude + Codex hooks** — shared hook scripts give both agents identical hard guarantees without maintaining two copies of a rule.
-- **Deterministic verify** — `scripts/verify.sh` runs lint + types + import boundaries + tests, fast-failing in a fixed order; CI runs the exact same script.
-
-See [`contexts/dev/harness-engineering.md`](contexts/dev/harness-engineering.md) for the enforcement mechanics.
-
-
-### 🚀 Quick Start
-
-#### The agent path (recommended)
-
-QuantMind is meant to be opened, not imported. Point a coding agent at the checkout and describe the pipeline you want:
+### 1. cloneとinstall
 
 ```bash
 git clone https://github.com/tikeda123/quant-mind-codex.git
-cd quant-mind-codex && codex
-```
+cd quant-mind-codex
 
-Then, in the agent session:
-
-> "Build me a source-first paper artifact for arXiv 1706.03762, then persist it and search the summary."
-
-The agent reads the repo's contracts (`AGENTS.md`), loads the relevant `contexts/` pages, writes the pipeline, and runs `scripts/verify.sh` before it hands the change back.
-
-#### The library path
-
-QuantMind is still a normal Python package. We use [uv](https://github.com/astral-sh/uv) for package management.
-
-```bash
-uv venv && source .venv/bin/activate
-uv pip install -e .
-```
-
-`PaperFlow` refines one arXiv PDF into a self-contained paper artifact. The cfg **type** selects the knowledge shape (`PaperStructureCfg` → `PaperStructureTree`, `PaperSemanticCfg` → `PaperSemanticResult`). Bind a `PaperStructureCfg` to build a source-native **structure tree** — a hierarchy of page-cited nodes:
-
-```python
-import asyncio
-
-from quantmind.configs import PaperStructureCfg
-from quantmind.configs.paper import ArxivIdentifier
-from quantmind.flows import PaperFlow
-
-
-async def main() -> None:
-    flow = PaperFlow(PaperStructureCfg(model="gpt-5.6-luna"))
-    tree = await flow.build(ArxivIdentifier(id="1706.03762v7"))
-    print(tree.id, len(tree.nodes))
-
-
-asyncio.run(main())
-```
-
-Prefer the **semantic** shape — a page-aware chunk set plus one cited global summary you can embed and retrieve over? Bind a `PaperSemanticCfg` instead — same class, different cfg:
-
-```python
-import asyncio
-
-from quantmind.configs import PaperSemanticCfg
-from quantmind.configs.paper import ArxivIdentifier
-from quantmind.flows import PaperFlow
-
-
-async def main() -> None:
-    flow = PaperFlow(PaperSemanticCfg(model="gpt-5.6-luna", chunk_size=512))
-    result = await flow.build(ArxivIdentifier(id="1706.03762v7"))
-    print(result.global_summary.summary)
-    print(result.source_revision.id, result.chunk_set.id)
-
-
-asyncio.run(main())
-```
-
-#### Fan out a batch with `batch_run`
-
-```python
-import asyncio
-from datetime import datetime, timedelta, timezone
-
-from quantmind.configs import NewsCollectionCfg, NewsWindow
-from quantmind.flows import batch_run, collect_news
-
-
-async def main() -> None:
-    end = datetime.now(timezone.utc)
-    windows = [
-        NewsWindow(
-            source="pr-newswire",
-            start=end - timedelta(days=day + 1),
-            end=end - timedelta(days=day),
-        )
-        for day in range(3)
-    ]
-    result = await batch_run(
-        collect_news,
-        windows,
-        cfg=NewsCollectionCfg(retain_raw_html=False),
-        concurrency=3,
-        on_error="skip",
-        on_progress=lambda done, total: print(f"{done}/{total}"),
-    )
-    print(f"ok={result.success_count} failed={result.failure_count}")
-
-
-asyncio.run(main())
-```
-
-#### Resolve free-form intent with `magic`
-
-```python
-import asyncio
-
-from quantmind.flows import collect_news
-from quantmind.magic import resolve_magic_input
-
-
-async def main() -> None:
-    inp, cfg = await resolve_magic_input(
-        "Collect the last day of PR Newswire company news.",
-        target_flow=collect_news,
-    )
-    batch = await collect_news(inp, cfg=cfg)
-    print(f"documents={batch.success_count} complete={batch.complete}")
-
-
-asyncio.run(main())
-```
-
-More examples live under [`examples/`](examples/); design contracts live under [`contexts/design/`](contexts/design/).
-
-#### Run the API-key-free Codex Paper Library
-
-Install the library, UI, and fixed local embedding dependencies. The one-time
-cache command uses public network access but requires no Hugging Face API key;
-normal operation does not download models.
-
-```bash
-uv venv && source .venv/bin/activate
+uv venv
+source .venv/bin/activate
 uv pip install -e ".[full,ui]"
+```
 
+### 2. 固定ローカルモデルを一度だけcache
+
+モデルweightの取得には公開networkを使いますが、Hugging Face API keyは不要です。通常の登録・検索は `local_files_only=True` です。
+
+```bash
 export QUANTMIND_RUNTIME_ROOT="/absolute/path/to/quantmind-codex-data"
 mkdir -p "$QUANTMIND_RUNTIME_ROOT/models" "$QUANTMIND_RUNTIME_ROOT/intake"
+
 python scripts/cache_local_embedding_model.py \
   --cache-dir "$QUANTMIND_RUNTIME_ROOT/models"
+```
 
+### 3. DB pathを指定してUIを起動
+
+```bash
 export QUANTMIND_LIBRARY_DB="$QUANTMIND_RUNTIME_ROOT/paper-library.sqlite3"
 export QUANTMIND_UI_DB="$QUANTMIND_RUNTIME_ROOT/paper-library-ui.sqlite3"
 export QUANTMIND_MODEL_CACHE="$QUANTMIND_RUNTIME_ROOT/models"
 export QUANTMIND_INTAKE_ROOT="$QUANTMIND_RUNTIME_ROOT/intake"
 
 streamlit run apps/paper_library/app.py \
-  --server.address 127.0.0.1
+  --server.address 127.0.0.1 \
+  --server.port 8501
 ```
 
-Set `QUANTMIND_RUNTIME_ROOT` to an absolute directory outside the Git checkout
-so paper data, model weights, and personal annotations remain local runtime
-assets rather than repository files.
+ブラウザで [http://127.0.0.1:8501](http://127.0.0.1:8501) を開きます。runtime rootはGit checkoutの外に置き、PDF、SQLite、model weight、intake中間fileをcommitしないでください。
 
-Open [`http://127.0.0.1:8501`](http://127.0.0.1:8501), then use the explicit
-operator loop:
+### 4. 最初の論文を登録
 
-1. In **Intake**, upload a text PDF or enter a public HTTPS PDF URL and select
-   **Prepare**.
-2. Ask Codex in this checkout to read the displayed `source.pdf`,
-   `manifest.json`, and cited-draft policy, then write only `draft.json` in the
-   prepared work directory.
-3. Return to the UI, reload and validate the draft, inspect the preview, and
-   explicitly confirm canonical registration.
-4. In **Paper Detail**, prepare the registered source for translation, ask
-   Codex to write the page-complete `translation_draft.json`, validate it, and
-   register it as a separate immutable artifact.
-5. Add explanatory images and Japanese descriptions as visual annotations,
-   manage review/reading state, and use **Search** for Japanese or English
-   semantic queries.
+1. **取り込み**でPDFまたは公開HTTPS URLを指定し、`Prepare`を選ぶ。
+2. 画面に表示された `source.pdf`、`manifest.json`、draft contractをCodexに読ませ、同じdirectoryへ `draft.json`だけを保存させる。
+3. UIで `再読込して検証`し、previewを確認する。
+4. checkboxで明示的に同意し、`登録する`を選ぶ。
+5. **論文詳細**で日本語訳、説明画像、表示用書誌、読書状態を追加する。
 
-For command-line operation and exact JSON contracts, follow the
-[interactive registration procedure](contexts/usage/codex-paper-registration.md).
-The [database construction guide](docs/paper-library-setup.md) is the complete
-new-install, full-pair migration, verification, and backup runbook. Its
-`scripts/migrate_paper_library.py` command verifies every table row and BLOB,
-then reopens papers, translations, visual annotations, and semantic search
-through the public application API. The
-[local library guide](docs/library.md#api-key-free-interactive-paper-registration)
-and [Paper Library UI guide](docs/paper-library-ui.md) document the lower-level
-persistence contract, security boundaries, and known limitations.
+## マニュアル
 
-### 🔬 Evaluation (In Design)
+| 読みたい内容 | ドキュメント |
+|---|---|
+| 日常の使い方、画面別操作、Codex依頼、障害対応 | **[Paper Library 日本語運用マニュアル](docs/paper-library-manual-ja.md)** |
+| 新規構築、DB schema、移行、backup、受け入れ確認 | [DB構築・永続化ガイド](docs/paper-library-setup.md) |
+| 6画面の役割、data ownership、安全境界、制限 | [Paper Library UI guide](docs/paper-library-ui.md) |
+| LocalKnowledgeLibraryの保存・検索contract | [Library guide](docs/library.md) |
+| PDF取り込み時にCodexが守る手順 | [Interactive registration procedure](contexts/usage/codex-paper-registration.md) |
+| 要約・注釈draftの厳密なJSON contract | [Cited draft contract](contexts/usage/codex-paper-draft-v1.md) |
+| 全ページ日本語訳の厳密なJSON contract | [Translation contract](contexts/usage/codex-paper-translation-v1.md) |
+| 公開operation、example、検証commandの一覧 | [Component catalog](docs/README.md) |
 
-> [!NOTE]
-> Evaluation is in the **design phase** — no results are claimed yet. Our framing follows Anthropic's [Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents).
-
-**quantmind-bench** measures the harness bet directly. Following the SWE-bench model, it runs **paired trials on the same model and the same task set**: once against a bare checkout, once against the QuantMind repo mounted with its contracts, contexts, skills, and hooks. The reported deltas are **cost-to-green, pass@1, pass^k across seeds, and wall-clock** — how much a good harness moves a fixed model. Run instrumentation (tokens / cost / duration / a verify oracle) already ships; the protocol that consumes it is being designed, and no numbers are published.
-
-A separate **llmquant-data-bench** will score knowledge quality (correctness, citation precision/recall, point-in-time correctness); it is likewise in design.
-
-### 🏭 In Production: LLMQuant Data
-
-LLMQuant Data is QuantMind in production. The hosted data platform runs extraction pipelines powered by QuantMind: QuantMind is the open engine, LLMQuant Data is the operated product on top of it. The dependency direction is one-way — `llmquant-data` imports `quantmind`, never the reverse.
-
-<p align="center"><img src="assets/llmquant-data-cards.png" width="860"></p>
-
-
-### 🗺️ Roadmap
-
-Directions we are actively pushing on (not yet shipped):
-
-- **More agent-native** — a `quantmind-best-practice` skill alongside the shipped `quantmind-dev`, and an agent-first contributing path.
-- **Broader coverage** — a SEC / filings collection flow and a prediction-market knowledge type, beyond today's papers and news.
-- **Evaluation** — land the `quantmind-bench` protocol and publish its first paired runs.
-
-Development is moving fast. If you need a source, a knowledge type, or a flow we do not have yet, [open an issue](https://github.com/tikeda123/quant-mind-codex/issues) — we welcome the request.
-
-
-### 🤝 Contributing
-
-Prefer manual steps? See [`.claude/skills/quantmind-dev/references/setup.md`](.claude/skills/quantmind-dev/references/setup.md).
-
-The fastest path is to let a coding agent drive. Inside the checkout, tell Claude Code:
+## データの分離
 
 ```text
-/quantmind-dev set me up as a contributor
-/quantmind-dev file an issue: <what you need>
-/quantmind-dev I want to contribute <your change>
+quantmind-codex-data/
+├── paper-library.sqlite3       # 原典PDF、page text、artifact、vector、登録監査
+├── paper-library-ui.sqlite3    # 書誌表示、読書状態、tag、collection、memo、説明画像、review
+├── models/                     # 固定multilingual-e5-small cache
+└── intake/                     # PrepareとCodex受け渡し用の作業directory
 ```
 
-Codex users say the same thing in words — the skill is mirrored under `.agents/skills/quantmind-dev/`, so both agents follow one workflow: contributor setup, filing an issue, and developing a change with tests, verification, commit, and PR.
+canonical DBとsidecar DBは別fileです。canonical evidenceを保持したままsidecarだけを再構築できますが、その場合は個人メモ、表示用書誌、読書状態、タグ、コレクション、説明画像、翻訳レビューを失います。運用時は必ず2つを一組でbackupしてください。
 
-> [!IMPORTANT]
-> **For Contributors**: [CONTRIBUTING.md](CONTRIBUTING.md) covers the same setup for humans — environment, pre-commit hooks, coding standards, and testing. `scripts/verify.sh` is the single deterministic check; CI runs the exact same script.
+## 検証
 
-We welcome contributions of all forms, from bug reports to feature development. Open an [issue](https://github.com/tikeda123/quant-mind-codex/issues) to discuss significant changes before you start, and make sure `bash scripts/verify.sh` is green before you open a PR.
+repository全体のnetwork-free検証:
 
-### License
+```bash
+bash scripts/verify.sh
+```
 
-QuantMind is released under the MIT License—see `LICENSE` for details.
+Paper Library固有の検証:
 
-### ❤️ Acknowledgements
+```bash
+python scripts/verify_paper_library_ui.py
+python scripts/verify_local_paper_e2e.py \
+  --cache-dir "$QUANTMIND_MODEL_CACHE"
+```
 
-- **arXiv** for providing open access to a world of research.
-- The **open-source community** for the tools and libraries that make this project possible.
-</content>
-</invoke>
+DB移行後は [`scripts/migrate_paper_library.py`](scripts/migrate_paper_library.py) の `migration-manifest.json` と `migration-acceptance.json` を確認します。詳細は [DB構築・永続化ガイド](docs/paper-library-setup.md) を参照してください。
+
+## 現在の制限
+
+- text layerを持たないscan PDFはそのまま登録できません。OCR後に数式、表、ページ順を目視確認してください。
+- 翻訳はページ単位の読解支援であり、原典の引用根拠ではありません。
+- 説明画像はsidecarの読解補助資料であり、原論文の証拠や意味検索対象ではありません。
+- local semantic searchは単一の固定E5 modelとbrute-force近傍照合です。
+- canonical artifactのUI編集・削除・自動repair・re-embed・VACUUMは提供しません。
+- UIはloopback専用です。認証やremote deploymentを想定していません。
+
+## 上流から継承するQuantMindライブラリ
+
+QuantMindは、論文、news、filingなどの情報を、citationとas-of時刻を持つ型付きknowledgeへ変換する定量金融向けPythonライブラリです。このforkでも、次の上流設計を維持しています。
+
+- `quantmind.knowledge`: self-containedなPydantic knowledge model
+- `quantmind.configs`: operation configとtyped input
+- `quantmind.preprocess`: 決定論的なfetch、format、clean、time処理
+- `quantmind.rag`: LlamaIndexを用いたchunkingとretrieval
+- `quantmind.flows`: `PaperFlow`、`collect_news`、`batch_run`
+- `quantmind.library`: SQLite persistenceとsemantic retrieval
+- `quantmind.mind`: reasoning-based retrieval
+- `contexts/`、skills、hooks、`scripts/verify.sh`: agent向け開発harness
+
+## 🚀 Usage Examples
+
+Paper Library以外の上流由来Python APIも利用できます。各flowのmodel/provider要件はPaper LibraryのAPI-key-free境界とは別です。
+
+- [PaperFlowで論文を構造化する](examples/flows/paper.py)
+- [PR Newswireを収集する](examples/flows/collect_news.py)
+- [PaperStructureTreeをagentic retrievalする](examples/mind/paper_structure_retrieval.py)
+- [LocalKnowledgeLibraryでsemantic searchする](examples/library/semantic_search.py)
+
+`batch_run`は、同じ設定のoperationを複数inputへbounded fan-outする上流由来のutilityです。
+
+```python
+from quantmind.flows import batch_run
+
+results = await batch_run(flow.build, inputs)
+```
+
+上流プロジェクトの思想、Quick Start、roadmap、最新変更を確認する場合は、[オリジナルのGitHub repository](https://github.com/LLMQuant/quant-mind) を参照してください。このforkの追加機能に関するissueは [tikeda123/quant-mind-codex/issues](https://github.com/tikeda123/quant-mind-codex/issues) へ登録してください。
+
+## Contributing
+
+開発ルールは [`AGENTS.md`](AGENTS.md)、人間向けsetupは [`CONTRIBUTING.md`](CONTRIBUTING.md)、component別の公開operationと検証commandは [`docs/README.md`](docs/README.md) を参照してください。変更前に対象contextを選び、公開前に `bash scripts/verify.sh` を通してください。
+
+## License and upstream attribution
+
+QuantMindとこのforkはMIT Licenseです。詳細は [`LICENSE`](LICENSE) を参照してください。
+
+- Upstream: [LLMQuant/quant-mind](https://github.com/LLMQuant/quant-mind)
+- Fork: [tikeda123/quant-mind-codex](https://github.com/tikeda123/quant-mind-codex)
+- arXivとopen-source communityに感謝します。

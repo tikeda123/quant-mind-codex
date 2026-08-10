@@ -10,6 +10,21 @@ Public callable names follow the
 Python callers; coding-agent guidance lives in the repository development
 harness.
 
+## Codex Paper Library Manuals
+
+The local Paper Library is a fork-specific, human-operated application. Start
+with the Japanese manual for daily use, then use the narrower guides when
+building or auditing a runtime.
+
+| Guide | Purpose |
+|---|---|
+| [日本語運用マニュアル](paper-library-manual-ja.md) | Original/fork relationship, installation, intake, Codex handoff, Japanese translation, image annotations, search, organization, backup, and troubleshooting |
+| [Database construction and persistence](paper-library-setup.md) | Exact new-install, schema, migration, acceptance, backup, and restore procedure |
+| [Paper Library UI](paper-library-ui.md) | Six views, canonical/sidecar ownership, security boundaries, and limitations |
+| [LocalKnowledgeLibrary](library.md) | Public persistence and semantic-retrieval contract |
+
+The fork is [`tikeda123/quant-mind-codex`](https://github.com/tikeda123/quant-mind-codex). The original upstream project is [`LLMQuant/quant-mind`](https://github.com/LLMQuant/quant-mind). The root [README](../README.md#オリジナルとの違い) contains the maintained feature comparison.
+
 ## Public Operations
 
 | Operation | Import | Input and config | Result | Example | Design or guide |
@@ -93,7 +108,9 @@ python scripts/migrate_paper_library.py \
   --query "ポートフォリオの共分散"
 ```
 
-See the [database construction guide](paper-library-setup.md) for the complete
+See the [Japanese operating manual](paper-library-manual-ja.md) for the
+human workflow and troubleshooting. The
+[database construction guide](paper-library-setup.md) provides the complete
 new-install, first-registration, translation, image-annotation, migration,
 verification, and backup runbook. The [local paper UI guide](paper-library-ui.md)
 covers views, data ownership, security boundaries, and known limitations.
