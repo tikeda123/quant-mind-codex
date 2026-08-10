@@ -15,11 +15,13 @@ harness.
 | Operation | Import | Input and config | Result | Example | Design or guide |
 |---|---|---|---|---|---|
 | Source-first paper flow | `quantmind.flows.PaperFlow` | `PaperFlow(PaperSemanticCfg)`; `build()`: `PaperInput` | `PaperSemanticResult` | [Persist and search a paper](../examples/flows/paper.py) | [Paper flow design](../contexts/design/flow/paper.md) |
+| Interactive cited-paper finalization | `quantmind.flows.PaperFlow` | `PaperFlow(PaperCitedDraftCfg)`; `build()`: `CitedPaperDraftInput` | `PaperAnnotatedResult` | [Validate, register, and search](../examples/flows/paper_cited_draft.py) | [Operator procedure](../contexts/usage/codex-paper-registration.md) |
+| Interactive paper translation finalization | `quantmind.flows.PaperFlow` | `PaperFlow(PaperTranslationDraftCfg)`; `build()`: `PaperTranslationDraftInput` | `PaperTranslatedResult` | [Validate, register, and reopen](../examples/flows/paper_translation_draft.py) | [Translation draft contract](../contexts/usage/codex-paper-translation-v1.md) |
 | Paper structure build | `quantmind.flows.PaperFlow` | `PaperFlow(PaperStructureCfg)`; `build()`: `PaperInput` | `PaperStructureTree` (self-contained) | [Build and retrieve](../examples/mind/paper_structure_retrieval.py) | [Structure retrieval design](../contexts/design/mind/retrieval.md) |
 | Reasoning-based retrieval (agentic) | `quantmind.mind.AgenticRetriever` | `AgenticRetriever(RetrievalCfg)`; `retrieve()`: one `StructureTree` + question (no library) | `list[RetrievalEvidence]` | [Build and retrieve](../examples/mind/paper_structure_retrieval.py) | [Structure retrieval design](../contexts/design/mind/retrieval.md) |
 | News collection | `quantmind.flows.collect_news` | `NewsWindow`, `NewsCollectionCfg` | `NewsBatch` from `quantmind.preprocess` | [Collect news](../examples/flows/collect_news.py) | [News collection design](../contexts/design/flow/news.md) |
 | Bounded fan-out | `quantmind.flows.batch_run` | Operation inputs and shared config | `BatchResult` | [README usage](../README.md#-usage-examples) | API docstrings |
-| Local semantic search | `quantmind.library.LocalKnowledgeLibrary` | `BaseKnowledge` or `PaperSemanticResult`, `SemanticQuery` | `list[SemanticHit]` | [Library example](../examples/library/README.md) | [Library guide](library.md) |
+| Local persistence, catalog, and semantic search | `quantmind.library.LocalKnowledgeLibrary` | canonical knowledge, cited or translated paper results, catalog queries, or `SemanticQuery` | stored values, management views, or `list[SemanticHit]` | [Cited paper example](../examples/flows/paper_cited_draft.py) | [Library guide](library.md) |
 | Page-aware document RAG | `quantmind.rag.chunk_parsed_document`, `quantmind.rag.retrieve_parsed_document` | `ParsedDocument`, splitter config, and query | `tuple[ParsedDocumentHit, ...]` | [Paper RAG](../examples/rag/paper.py) | [Document RAG design](../contexts/design/rag/document.md) |
 
 Import public inputs and configs from `quantmind.configs`, flow operations and
@@ -72,6 +74,21 @@ coverage, and must remain network-free. The required `.github/workflows/ci.yml`
 workflow runs this same harness after file-hygiene hooks. When a change affects
 a public-network component, also run every applicable live-network smoke test
 listed above; `.github/workflows/e2e.yml` owns those component jobs.
+
+The API-key-free local paper workflow has two explicit operator checks. The UI
+shell check is network-free and does not load a model. The paper check requires
+the exact revision to have been cached by an earlier explicit command, then
+keeps normal model loading local-only:
+
+```bash
+python scripts/verify_paper_library_ui.py
+python scripts/verify_local_paper_e2e.py \
+  --cache-dir /absolute/path/to/quantmind-models
+```
+
+See the [local paper UI guide](paper-library-ui.md) for installation, paths,
+views, data ownership, security boundaries, and known limitations. Neither
+local check creates a new scheduled workflow or calls Codex from Python.
 
 ## Adding a Public Operation or Source
 

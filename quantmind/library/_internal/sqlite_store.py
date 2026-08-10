@@ -3,11 +3,13 @@
 import hashlib
 import json
 import sqlite3
+from base64 import urlsafe_b64decode, urlsafe_b64encode
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from uuid import UUID
+from typing import Any, cast
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import ValidationError
 
@@ -19,12 +21,16 @@ from quantmind.knowledge import (
     Factor,
     LegacyPaper,
     News,
+    PaperAnnotatedResult,
+    PaperAnnotationSet,
     PaperArtifact,
     PaperChunkSet,
     PaperGlobalSummary,
     PaperSemanticResult,
     PaperSourceRevision,
     PaperStructureTree,
+    PaperTranslatedResult,
+    PaperTranslation,
     ResolvedPaperArtifact,
     Thesis,
     TreeKnowledge,
@@ -35,8 +41,41 @@ from quantmind.library._internal.retrieval_targets import (
     _PROJECTION_SCHEMA_VERSION,
     _RetrievalTarget,
 )
+from quantmind.library._types import (
+    PaperAssetPayload,
+    PaperCatalogEntry,
+    PaperCatalogPage,
+    PaperCatalogQuery,
+    PaperDetails,
+    PaperLibraryStats,
+    PaperRegistrationRecord,
+    PaperTranslationRegistrationRecord,
+    _registration_content_hash,
+    _translation_registration_content_hash,
+)
 
-_DATABASE_SCHEMA_VERSION = 5
+_DATABASE_SCHEMA_VERSION = 7
+
+_REGISTRATION_POLICY_VERSION = "paper-registration-v1"
+_REGISTRATION_CHECKS = (
+    "source_hash",
+    "asset_integrity",
+    "page_sequence",
+    "chunk_spans",
+    "summary_citations",
+    "annotation_citations",
+    "embedding_vectors",
+    "sqlite_constraints",
+)
+
+_TRANSLATION_REGISTRATION_POLICY_VERSION = "paper-translation-registration-v1"
+_TRANSLATION_REGISTRATION_CHECKS = (
+    "source_hash",
+    "page_sequence",
+    "source_page_text",
+    "complete_translation",
+    "sqlite_constraints",
+)
 
 _KNOWLEDGE_CLASSES: dict[str, type[BaseKnowledge]] = {
     f"{knowledge_type.__module__}:{knowledge_type.__qualname__}": knowledge_type
@@ -124,7 +163,7 @@ class _CanonicalPaperArtifact:
 class _PreparedPaperPut:
     """Validated source/artifact write plus reusable search projections."""
 
-    result: PaperSemanticResult
+    result: PaperSemanticResult | PaperAnnotatedResult
     source_payload: str
     source_canonical_hash: str
     artifacts: tuple[_CanonicalPaperArtifact, ...]
@@ -136,6 +175,16 @@ class _PreparedStructureTreePut:
     """Validated self-contained structure-tree write with no source revision."""
 
     tree: PaperStructureTree
+    canonical: _CanonicalPaperArtifact
+
+
+@dataclass(frozen=True)
+class _PreparedTranslationPut:
+    """Validated source/translation write requiring no vector projection."""
+
+    result: PaperTranslatedResult
+    source_payload: str
+    source_canonical_hash: str
     canonical: _CanonicalPaperArtifact
 
 
@@ -227,6 +276,52 @@ def _canonical_paper_artifact(
             artifact=artifact,
             payload=_json_payload(
                 artifact.model_dump(mode="json", exclude={"nodes"})
+            ),
+            canonical_hash=canonical_hash,
+            members=members,
+        )
+    if isinstance(artifact, PaperAnnotationSet):
+        members = tuple(
+            _CanonicalPaperMember(
+                member_id=annotation.annotation_id,
+                parent_id=None,
+                position=annotation.position,
+                payload=(
+                    payload := _json_payload(annotation.model_dump(mode="json"))
+                ),
+                content_hash=hashlib.sha256(
+                    payload.encode("utf-8")
+                ).hexdigest(),
+            )
+            for annotation in artifact.annotations
+        )
+        return _CanonicalPaperArtifact(
+            artifact=artifact,
+            payload=_json_payload(
+                artifact.model_dump(mode="json", exclude={"annotations"})
+            ),
+            canonical_hash=canonical_hash,
+            members=members,
+        )
+    if isinstance(artifact, PaperTranslation):
+        members = tuple(
+            _CanonicalPaperMember(
+                member_id=page.page_id,
+                parent_id=None,
+                position=page.position,
+                payload=(
+                    payload := _json_payload(page.model_dump(mode="json"))
+                ),
+                content_hash=hashlib.sha256(
+                    payload.encode("utf-8")
+                ).hexdigest(),
+            )
+            for page in artifact.pages
+        )
+        return _CanonicalPaperArtifact(
+            artifact=artifact,
+            payload=_json_payload(
+                artifact.model_dump(mode="json", exclude={"pages"})
             ),
             canonical_hash=canonical_hash,
             members=members,
@@ -490,6 +585,284 @@ CREATE INDEX paper_projections_filters
     ON paper_projections(artifact_kind, source_kind, source_revision_id);
 """
 
+_PAPER_V6_TABLES_SQL = """
+CREATE TABLE paper_registration_records (
+    registration_id TEXT PRIMARY KEY,
+    source_revision_id TEXT NOT NULL,
+    chunk_set_id TEXT NOT NULL,
+    summary_id TEXT NOT NULL,
+    annotation_set_id TEXT NOT NULL,
+    schema_version TEXT NOT NULL,
+    registered_at REAL NOT NULL,
+    payload_json TEXT NOT NULL,
+    canonical_hash TEXT NOT NULL,
+    FOREIGN KEY (source_revision_id)
+        REFERENCES paper_sources(source_revision_id) ON DELETE CASCADE,
+    FOREIGN KEY (chunk_set_id)
+        REFERENCES paper_artifacts(artifact_id) ON DELETE CASCADE,
+    FOREIGN KEY (summary_id)
+        REFERENCES paper_artifacts(artifact_id) ON DELETE CASCADE,
+    FOREIGN KEY (annotation_set_id)
+        REFERENCES paper_artifacts(artifact_id) ON DELETE CASCADE
+);
+
+CREATE INDEX paper_registration_records_source_time
+    ON paper_registration_records(source_revision_id, registered_at);
+
+CREATE TABLE paper_catalog (
+    source_revision_id TEXT PRIMARY KEY,
+    source_content_hash TEXT NOT NULL,
+    title TEXT,
+    authors_text TEXT NOT NULL,
+    published_at REAL,
+    available_at REAL NOT NULL,
+    source_kind TEXT NOT NULL,
+    source_uri TEXT NOT NULL,
+    page_count INTEGER NOT NULL CHECK (page_count > 0),
+    empty_page_count INTEGER NOT NULL CHECK (empty_page_count >= 0),
+    FOREIGN KEY (source_revision_id)
+        REFERENCES paper_sources(source_revision_id) ON DELETE CASCADE
+);
+
+CREATE INDEX paper_catalog_dates
+    ON paper_catalog(published_at, available_at, source_revision_id);
+CREATE INDEX paper_catalog_source_kind
+    ON paper_catalog(source_kind, source_revision_id);
+"""
+
+_PAPER_V7_TABLES_SQL = """
+CREATE TABLE IF NOT EXISTS paper_translation_registration_records (
+    registration_id TEXT PRIMARY KEY,
+    source_revision_id TEXT NOT NULL,
+    translation_id TEXT NOT NULL,
+    schema_version TEXT NOT NULL,
+    registered_at REAL NOT NULL,
+    payload_json TEXT NOT NULL,
+    canonical_hash TEXT NOT NULL,
+    FOREIGN KEY (source_revision_id)
+        REFERENCES paper_sources(source_revision_id) ON DELETE CASCADE,
+    FOREIGN KEY (translation_id)
+        REFERENCES paper_artifacts(artifact_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS paper_translation_registration_source_time
+    ON paper_translation_registration_records(
+        source_revision_id, registered_at
+    );
+"""
+
+
+def _catalog_row(source: PaperSourceRevision) -> tuple[object, ...]:
+    return (
+        str(source.id),
+        source.source.content_hash,
+        source.title,
+        _json_payload(list(source.authors)),
+        (
+            _timestamp(source.published_at, "PaperSourceRevision.published_at")
+            if source.published_at is not None
+            else None
+        ),
+        _timestamp(source.available_at, "PaperSourceRevision.available_at"),
+        source.source.kind,
+        source.source.uri,
+        len(source.parsed.pages),
+        sum(not page.text.strip() for page in source.parsed.pages),
+    )
+
+
+def _write_catalog_row(
+    db: sqlite3.Connection, source: PaperSourceRevision
+) -> None:
+    db.execute(
+        """
+        INSERT INTO paper_catalog (
+            source_revision_id, source_content_hash, title, authors_text,
+            published_at, available_at, source_kind, source_uri,
+            page_count, empty_page_count
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source_revision_id) DO UPDATE SET
+            source_content_hash = excluded.source_content_hash,
+            title = excluded.title,
+            authors_text = excluded.authors_text,
+            published_at = excluded.published_at,
+            available_at = excluded.available_at,
+            source_kind = excluded.source_kind,
+            source_uri = excluded.source_uri,
+            page_count = excluded.page_count,
+            empty_page_count = excluded.empty_page_count
+        """,
+        _catalog_row(source),
+    )
+
+
+def _paper_registration_id(result: PaperAnnotatedResult) -> UUID:
+    identity = _json_payload(
+        {
+            "annotation_set_id": str(result.annotation_set.id),
+            "chunk_set_id": str(result.chunk_set.id),
+            "policy_version": _REGISTRATION_POLICY_VERSION,
+            "source_revision_id": str(result.source_revision.id),
+            "summary_id": str(result.global_summary.id),
+        }
+    )
+    return uuid5(NAMESPACE_URL, f"quantmind:paper-registration:{identity}")
+
+
+def _build_registration_record(
+    result: PaperAnnotatedResult,
+    *,
+    registered_at: datetime,
+    embedding_model: str,
+    embedding_dimensions: int,
+) -> PaperRegistrationRecord:
+    source = result.source_revision
+    raw_asset = next(
+        (
+            asset
+            for asset in source.assets
+            if asset.asset_id == source.raw_asset_id
+        ),
+        None,
+    )
+    if raw_asset is None:
+        raise ValueError("paper source raw PDF asset is missing")
+    values: dict[str, object] = {
+        "registration_id": _paper_registration_id(result),
+        "schema_version": "1.0",
+        "registered_at": registered_at,
+        "source_revision_id": source.id,
+        "chunk_set_id": result.chunk_set.id,
+        "summary_id": result.global_summary.id,
+        "annotation_set_id": result.annotation_set.id,
+        "pdf_size_bytes": raw_asset.size_bytes,
+        "page_count": len(source.parsed.pages),
+        "empty_pages": tuple(
+            page.page_number
+            for page in source.parsed.pages
+            if not page.text.strip()
+        ),
+        "parser_name": source.parsed.parser_name,
+        "parser_version": source.parsed.parser_version,
+        "embedding_model": embedding_model,
+        "embedding_dimensions": embedding_dimensions,
+        "passed_checks": _REGISTRATION_CHECKS,
+    }
+    canonical_payload = _json_payload(
+        PaperRegistrationRecord.model_construct(
+            **cast(dict[str, Any], values),
+            canonical_hash="0" * 64,
+        ).model_dump(mode="json", exclude={"canonical_hash"})
+    )
+    values["canonical_hash"] = hashlib.sha256(
+        canonical_payload.encode("utf-8")
+    ).hexdigest()
+    return PaperRegistrationRecord.model_validate(values)
+
+
+def _load_registration_row(row: sqlite3.Row) -> PaperRegistrationRecord:
+    registration_id = str(row["registration_id"])
+    try:
+        record = PaperRegistrationRecord.model_validate_json(
+            str(row["payload_json"])
+        )
+    except ValidationError as exc:
+        raise RuntimeError(
+            f"Stale paper registration '{registration_id}': invalid payload"
+        ) from exc
+    if (
+        str(record.registration_id) != registration_id
+        or record.schema_version != str(row["schema_version"])
+        or _timestamp(record.registered_at, "registered_at")
+        != float(row["registered_at"])
+        or record.canonical_hash != str(row["canonical_hash"])
+        or _registration_content_hash(record) != record.canonical_hash
+        or str(record.source_revision_id) != str(row["source_revision_id"])
+        or str(record.chunk_set_id) != str(row["chunk_set_id"])
+        or str(record.summary_id) != str(row["summary_id"])
+        or str(record.annotation_set_id) != str(row["annotation_set_id"])
+    ):
+        raise RuntimeError(
+            f"Stale paper registration '{registration_id}': metadata mismatch"
+        )
+    return record
+
+
+def _paper_translation_registration_id(
+    result: PaperTranslatedResult,
+) -> UUID:
+    identity = _json_payload(
+        {
+            "policy_version": _TRANSLATION_REGISTRATION_POLICY_VERSION,
+            "source_revision_id": str(result.source_revision.id),
+            "translation_id": str(result.translation.id),
+        }
+    )
+    return uuid5(
+        NAMESPACE_URL,
+        f"quantmind:paper-translation-registration:{identity}",
+    )
+
+
+def _build_translation_registration_record(
+    result: PaperTranslatedResult,
+    *,
+    registered_at: datetime,
+) -> PaperTranslationRegistrationRecord:
+    values: dict[str, object] = {
+        "registration_id": _paper_translation_registration_id(result),
+        "schema_version": "1.0",
+        "registered_at": registered_at,
+        "source_revision_id": result.source_revision.id,
+        "translation_id": result.translation.id,
+        "page_count": len(result.translation.pages),
+        "source_language": result.translation.producer.source_language,
+        "target_language": result.translation.producer.target_language,
+        "passed_checks": _TRANSLATION_REGISTRATION_CHECKS,
+    }
+    provisional = PaperTranslationRegistrationRecord.model_construct(
+        **cast(dict[str, Any], values),
+        canonical_hash="0" * 64,
+    )
+    payload = _json_payload(
+        provisional.model_dump(mode="json", exclude={"canonical_hash"})
+    )
+    values["canonical_hash"] = hashlib.sha256(
+        payload.encode("utf-8")
+    ).hexdigest()
+    return PaperTranslationRegistrationRecord.model_validate(values)
+
+
+def _load_translation_registration_row(
+    row: sqlite3.Row,
+) -> PaperTranslationRegistrationRecord:
+    registration_id = str(row["registration_id"])
+    try:
+        record = PaperTranslationRegistrationRecord.model_validate_json(
+            str(row["payload_json"])
+        )
+    except ValidationError as exc:
+        raise RuntimeError(
+            "Stale paper translation registration "
+            f"'{registration_id}': invalid payload"
+        ) from exc
+    if (
+        str(record.registration_id) != registration_id
+        or record.schema_version != str(row["schema_version"])
+        or _timestamp(record.registered_at, "registered_at")
+        != float(row["registered_at"])
+        or record.canonical_hash != str(row["canonical_hash"])
+        or _translation_registration_content_hash(record)
+        != record.canonical_hash
+        or str(record.source_revision_id) != str(row["source_revision_id"])
+        or str(record.translation_id) != str(row["translation_id"])
+    ):
+        raise RuntimeError(
+            "Stale paper translation registration "
+            f"'{registration_id}': metadata mismatch"
+        )
+    return record
+
 
 def _migrate_schema_v3_to_v4(db: sqlite3.Connection) -> None:
     """Allow vectorless artifacts and hierarchical normalized members."""
@@ -619,11 +992,79 @@ def _migrate_schema_v4_to_v5(db: sqlite3.Connection) -> None:
         db.execute("PRAGMA foreign_keys = ON")
 
 
+def _migrate_schema_v5_to_v6(db: sqlite3.Connection) -> None:
+    """Add registration audit and backfill the source management catalog."""
+    try:
+        db.executescript(f"BEGIN IMMEDIATE;\n{_PAPER_V6_TABLES_SQL}")
+        source_columns = {
+            str(row["name"])
+            for row in db.execute("PRAGMA table_info(paper_sources)").fetchall()
+        }
+        if "payload_json" not in source_columns:
+            source_count = int(
+                db.execute("SELECT COUNT(*) FROM paper_sources").fetchone()[0]
+            )
+            if source_count:
+                raise RuntimeError(
+                    "Stale paper source schema cannot be cataloged during v6 "
+                    "migration"
+                )
+            rows = []
+        else:
+            rows = db.execute(
+                "SELECT source_revision_id, payload_json FROM paper_sources"
+            ).fetchall()
+        for row in rows:
+            try:
+                source = PaperSourceRevision.model_validate_json(
+                    str(row["payload_json"])
+                )
+            except ValidationError as exc:
+                raise RuntimeError(
+                    "Stale paper source during v6 catalog migration: "
+                    f"'{row['source_revision_id']}'"
+                ) from exc
+            if str(source.id) != str(row["source_revision_id"]):
+                raise RuntimeError(
+                    "Stale paper source during v6 catalog migration: "
+                    "identity mismatch"
+                )
+            _write_catalog_row(db, source)
+        db.execute("PRAGMA user_version = 6")
+        if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise RuntimeError(
+                "Stale knowledge library schema: v5 migration broke links"
+            )
+        db.execute("COMMIT")
+    except Exception:
+        if db.in_transaction:
+            db.execute("ROLLBACK")
+        raise
+
+
+def _migrate_schema_v6_to_v7(db: sqlite3.Connection) -> None:
+    """Add immutable audit records for page-aligned translations."""
+    try:
+        db.executescript(
+            f"BEGIN IMMEDIATE;\n{_PAPER_V7_TABLES_SQL}\n"
+            "PRAGMA user_version = 7;"
+        )
+        if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise RuntimeError(
+                "Stale knowledge library schema: v6 migration broke links"
+            )
+        db.execute("COMMIT")
+    except Exception:
+        if db.in_transaction:
+            db.execute("ROLLBACK")
+        raise
+
+
 def _initialize_schema(db: sqlite3.Connection) -> None:
     """Create the current schema or reject an incompatible local database."""
     version_row = db.execute("PRAGMA user_version").fetchone()
     version = int(version_row[0])
-    if version not in (0, 2, 3, 4, _DATABASE_SCHEMA_VERSION):
+    if version not in (0, 2, 3, 4, 5, 6, _DATABASE_SCHEMA_VERSION):
         raise RuntimeError(
             "Stale knowledge library schema: database version "
             f"{version}, expected {_DATABASE_SCHEMA_VERSION}"
@@ -631,9 +1072,11 @@ def _initialize_schema(db: sqlite3.Connection) -> None:
     if version == _DATABASE_SCHEMA_VERSION:
         return
     if version == 2:
-        migration_sql = _PAPER_TABLES_SQL.replace(
-            "CREATE TABLE ", "CREATE TABLE IF NOT EXISTS "
-        ).replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ")
+        migration_sql = (
+            (_PAPER_TABLES_SQL + _PAPER_V6_TABLES_SQL + _PAPER_V7_TABLES_SQL)
+            .replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ")
+            .replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ")
+        )
         db.executescript(
             f"{migration_sql}\nPRAGMA user_version = {_DATABASE_SCHEMA_VERSION};"
         )
@@ -643,6 +1086,12 @@ def _initialize_schema(db: sqlite3.Connection) -> None:
         version = 4
     if version == 4:
         _migrate_schema_v4_to_v5(db)
+        version = 5
+    if version == 5:
+        _migrate_schema_v5_to_v6(db)
+        version = 6
+    if version == 6:
+        _migrate_schema_v6_to_v7(db)
         return
     db.executescript(
         f"""
@@ -703,6 +1152,10 @@ def _initialize_schema(db: sqlite3.Connection) -> None:
 
         {_PAPER_TABLES_SQL}
 
+        {_PAPER_V6_TABLES_SQL}
+
+        {_PAPER_V7_TABLES_SQL}
+
         PRAGMA user_version = {_DATABASE_SCHEMA_VERSION};
         """
     )
@@ -711,8 +1164,14 @@ def _initialize_schema(db: sqlite3.Connection) -> None:
 class _SQLiteStore:
     """Own the concrete SQLite schema, transactions, and record validation."""
 
-    def __init__(self, db: sqlite3.Connection) -> None:
+    def __init__(
+        self,
+        db: sqlite3.Connection,
+        *,
+        database_path: Path | None,
+    ) -> None:
         self._db = db
+        self._database_path = database_path
 
     @classmethod
     def open(cls, path: str | Path) -> "_SQLiteStore":
@@ -742,7 +1201,12 @@ class _SQLiteStore:
             if db is not None:
                 db.close()
             raise
-        return cls(db)
+        return cls(
+            db,
+            database_path=(
+                None if database_path == ":memory:" else Path(database_path)
+            ),
+        )
 
     def prepare_put(self, item: BaseKnowledge) -> _PreparedPut:
         """Validate a canonical write and load vectors it may retain."""
@@ -785,16 +1249,25 @@ class _SQLiteStore:
         )
 
     def prepare_put_paper(
-        self, result: PaperSemanticResult
+        self, result: PaperSemanticResult | PaperAnnotatedResult
     ) -> _PreparedPaperPut:
         """Validate paper blobs and load projections eligible for reuse."""
         source = result.source_revision
         source_payload, source_canonical_hash = _prepare_paper_source(source)
-        artifact_ids = (str(result.chunk_set.id), str(result.global_summary.id))
+        artifacts = [
+            _canonical_paper_artifact(result.chunk_set),
+            _canonical_paper_artifact(result.global_summary),
+        ]
+        if isinstance(result, PaperAnnotatedResult):
+            artifacts.append(_canonical_paper_artifact(result.annotation_set))
+        artifact_ids = tuple(
+            str(canonical.artifact.id) for canonical in artifacts
+        )
+        placeholders = ", ".join("?" for _ in artifact_ids)
         rows = self._db.execute(
-            """
+            f"""
             SELECT * FROM paper_projections
-            WHERE artifact_id IN (?, ?)
+            WHERE artifact_id IN ({placeholders})
             """,
             artifact_ids,
         ).fetchall()
@@ -815,11 +1288,30 @@ class _SQLiteStore:
             result=result,
             source_payload=source_payload,
             source_canonical_hash=source_canonical_hash,
-            artifacts=(
-                _canonical_paper_artifact(result.chunk_set),
-                _canonical_paper_artifact(result.global_summary),
-            ),
+            artifacts=tuple(artifacts),
             existing_embeddings=existing,
+        )
+
+    def prepare_put_translation(
+        self,
+        result: PaperTranslatedResult,
+    ) -> _PreparedTranslationPut:
+        """Validate exact source bytes and normalize a translation artifact."""
+        validated_translation = PaperTranslation.model_validate(
+            result.translation.model_dump(mode="json")
+        )
+        validated_result = PaperTranslatedResult(
+            source_revision=result.source_revision,
+            translation=validated_translation,
+        )
+        source_payload, source_canonical_hash = _prepare_paper_source(
+            validated_result.source_revision
+        )
+        return _PreparedTranslationPut(
+            result=validated_result,
+            source_payload=source_payload,
+            source_canonical_hash=source_canonical_hash,
+            canonical=_canonical_paper_artifact(validated_translation),
         )
 
     def _put_paper_source(
@@ -867,17 +1359,21 @@ class _SQLiteStore:
                     source.blobs[asset.content_hash],
                 ),
             )
+        _write_catalog_row(self._db, source)
 
-    def put_paper(
+    def _write_paper_bundle(
         self,
         prepared: _PreparedPaperPut,
         targets: Sequence[_RetrievalTarget],
         vectors: dict[str, tuple[bytes, int]],
         *,
         embedding_model: str,
-    ) -> None:
-        """Atomically persist one source, two artifacts, lineage, and vectors."""
+        register: bool,
+    ) -> PaperRegistrationRecord | None:
+        """Atomically persist one complete paper bundle and optional audit."""
         result = prepared.result
+        if register and not isinstance(result, PaperAnnotatedResult):
+            raise TypeError("only an annotated paper can be registered")
         source = result.source_revision
         canonical_by_id = {
             artifact.artifact.id: artifact for artifact in prepared.artifacts
@@ -887,8 +1383,19 @@ class _SQLiteStore:
             targets_by_artifact.setdefault(target.artifact_id, []).append(
                 target
             )
-        if set(targets_by_artifact) != set(canonical_by_id):
+        projected_artifact_ids = {
+            result.chunk_set.id,
+            result.global_summary.id,
+        }
+        if set(targets_by_artifact) != projected_artifact_ids:
             raise ValueError("paper artifacts do not have complete projections")
+        if set(vectors) != {target.target_id for target in targets}:
+            raise ValueError("paper projections do not have complete vectors")
+        dimensions = {dimension for _, dimension in vectors.values()}
+        if len(dimensions) != 1:
+            raise ValueError("paper projection dimensions are inconsistent")
+        embedding_dimensions = next(iter(dimensions))
+        registration: PaperRegistrationRecord | None = None
         try:
             self._db.execute("BEGIN IMMEDIATE")
             self._put_paper_source(
@@ -898,7 +1405,7 @@ class _SQLiteStore:
             )
             for canonical in prepared.artifacts:
                 artifact = canonical.artifact
-                artifact_targets = targets_by_artifact[artifact.id]
+                artifact_targets = targets_by_artifact.get(artifact.id, [])
                 self._db.execute(
                     """
                     INSERT INTO paper_artifacts (
@@ -957,19 +1464,25 @@ class _SQLiteStore:
                             member.content_hash,
                         ),
                     )
-            for locator in result.global_summary.derived_from:
-                self._db.execute(
-                    """
-                    INSERT INTO paper_artifact_lineage (
-                        artifact_id, input_artifact_id, relation
-                    ) VALUES (?, ?, ?)
-                    """,
-                    (
-                        str(result.global_summary.id),
-                        str(locator.artifact_id),
-                        "generated_from",
-                    ),
-                )
+            derived_artifacts: list[PaperGlobalSummary | PaperAnnotationSet] = [
+                result.global_summary
+            ]
+            if isinstance(result, PaperAnnotatedResult):
+                derived_artifacts.append(result.annotation_set)
+            for artifact in derived_artifacts:
+                for locator in artifact.derived_from:
+                    self._db.execute(
+                        """
+                        INSERT INTO paper_artifact_lineage (
+                            artifact_id, input_artifact_id, relation
+                        ) VALUES (?, ?, ?)
+                        """,
+                        (
+                            str(artifact.id),
+                            str(locator.artifact_id),
+                            "generated_from",
+                        ),
+                    )
             for target in targets:
                 blob, dimension = vectors[target.target_id]
                 canonical = canonical_by_id[target.artifact_id]
@@ -1019,7 +1532,228 @@ class _SQLiteStore:
                         blob,
                     ),
                 )
+            if register:
+                assert isinstance(result, PaperAnnotatedResult)
+                registration_id = _paper_registration_id(result)
+                existing_row = self._db.execute(
+                    """
+                    SELECT * FROM paper_registration_records
+                    WHERE registration_id = ?
+                    """,
+                    (str(registration_id),),
+                ).fetchone()
+                if existing_row is None:
+                    registration = _build_registration_record(
+                        result,
+                        registered_at=datetime.now(timezone.utc),
+                        embedding_model=embedding_model,
+                        embedding_dimensions=embedding_dimensions,
+                    )
+                    self._db.execute(
+                        """
+                        INSERT INTO paper_registration_records (
+                            registration_id, source_revision_id, chunk_set_id,
+                            summary_id, annotation_set_id, schema_version,
+                            registered_at, payload_json, canonical_hash
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(registration.registration_id),
+                            str(registration.source_revision_id),
+                            str(registration.chunk_set_id),
+                            str(registration.summary_id),
+                            str(registration.annotation_set_id),
+                            registration.schema_version,
+                            _timestamp(
+                                registration.registered_at,
+                                "PaperRegistrationRecord.registered_at",
+                            ),
+                            _json_payload(registration.model_dump(mode="json")),
+                            registration.canonical_hash,
+                        ),
+                    )
+                else:
+                    registration = _load_registration_row(existing_row)
+                    expected = _build_registration_record(
+                        result,
+                        registered_at=registration.registered_at,
+                        embedding_model=embedding_model,
+                        embedding_dimensions=embedding_dimensions,
+                    )
+                    if registration != expected:
+                        raise RuntimeError(
+                            "Stored paper registration conflicts with bundle"
+                        )
+            if (
+                self._db.execute("PRAGMA foreign_key_check").fetchone()
+                is not None
+            ):
+                raise RuntimeError("paper bundle violates SQLite constraints")
             self._db.execute("COMMIT")
+            return registration
+        except Exception:
+            if self._db.in_transaction:
+                self._db.execute("ROLLBACK")
+            raise
+
+    def put_paper(
+        self,
+        prepared: _PreparedPaperPut,
+        targets: Sequence[_RetrievalTarget],
+        vectors: dict[str, tuple[bytes, int]],
+        *,
+        embedding_model: str,
+    ) -> None:
+        """Atomically persist one semantic source/chunk/summary result."""
+        self._write_paper_bundle(
+            prepared,
+            targets,
+            vectors,
+            embedding_model=embedding_model,
+            register=False,
+        )
+
+    def put_annotated_paper(
+        self,
+        prepared: _PreparedPaperPut,
+        targets: Sequence[_RetrievalTarget],
+        vectors: dict[str, tuple[bytes, int]],
+        *,
+        embedding_model: str,
+    ) -> PaperRegistrationRecord:
+        """Atomically persist and audit one annotated paper bundle."""
+        registration = self._write_paper_bundle(
+            prepared,
+            targets,
+            vectors,
+            embedding_model=embedding_model,
+            register=True,
+        )
+        assert registration is not None
+        return registration
+
+    def put_translation(
+        self,
+        prepared: _PreparedTranslationPut,
+    ) -> PaperTranslationRegistrationRecord:
+        """Atomically persist a source, translation pages, and audit record."""
+        result = prepared.result
+        source = result.source_revision
+        translation = result.translation
+        canonical = prepared.canonical
+        try:
+            self._db.execute("BEGIN IMMEDIATE")
+            self._put_paper_source(
+                source,
+                payload=prepared.source_payload,
+                canonical_hash=prepared.source_canonical_hash,
+            )
+            self._db.execute(
+                """
+                INSERT INTO paper_artifacts (
+                    artifact_id, source_revision_id, artifact_kind,
+                    schema_version, producer_config_hash, payload_json,
+                    canonical_hash, member_count, target_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+                ON CONFLICT(artifact_id) DO UPDATE SET
+                    payload_json = excluded.payload_json,
+                    canonical_hash = excluded.canonical_hash,
+                    member_count = excluded.member_count,
+                    target_count = excluded.target_count
+                """,
+                (
+                    str(translation.id),
+                    str(translation.source_revision_id),
+                    translation.artifact_kind,
+                    translation.schema_version,
+                    translation.producer_config_hash,
+                    canonical.payload,
+                    canonical.canonical_hash,
+                    len(canonical.members),
+                ),
+            )
+            self._db.execute(
+                "DELETE FROM paper_projections WHERE artifact_id = ?",
+                (str(translation.id),),
+            )
+            self._db.execute(
+                "DELETE FROM paper_artifact_lineage WHERE artifact_id = ?",
+                (str(translation.id),),
+            )
+            self._db.execute(
+                "DELETE FROM paper_artifact_members WHERE artifact_id = ?",
+                (str(translation.id),),
+            )
+            for member in canonical.members:
+                self._db.execute(
+                    """
+                    INSERT INTO paper_artifact_members (
+                        artifact_id, member_id, parent_id, position,
+                        payload_json, content_hash
+                    ) VALUES (?, ?, NULL, ?, ?, ?)
+                    """,
+                    (
+                        str(translation.id),
+                        str(member.member_id),
+                        member.position,
+                        member.payload,
+                        member.content_hash,
+                    ),
+                )
+
+            registration_id = _paper_translation_registration_id(result)
+            row = self._db.execute(
+                """
+                SELECT * FROM paper_translation_registration_records
+                WHERE registration_id = ?
+                """,
+                (str(registration_id),),
+            ).fetchone()
+            if row is None:
+                registration = _build_translation_registration_record(
+                    result,
+                    registered_at=datetime.now(timezone.utc),
+                )
+                self._db.execute(
+                    """
+                    INSERT INTO paper_translation_registration_records (
+                        registration_id, source_revision_id, translation_id,
+                        schema_version, registered_at, payload_json,
+                        canonical_hash
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(registration.registration_id),
+                        str(registration.source_revision_id),
+                        str(registration.translation_id),
+                        registration.schema_version,
+                        _timestamp(
+                            registration.registered_at,
+                            "PaperTranslationRegistrationRecord.registered_at",
+                        ),
+                        _json_payload(registration.model_dump(mode="json")),
+                        registration.canonical_hash,
+                    ),
+                )
+            else:
+                registration = _load_translation_registration_row(row)
+                expected = _build_translation_registration_record(
+                    result,
+                    registered_at=registration.registered_at,
+                )
+                if registration != expected:
+                    raise RuntimeError(
+                        "Stored translation registration conflicts with artifact"
+                    )
+            if (
+                self._db.execute("PRAGMA foreign_key_check").fetchone()
+                is not None
+            ):
+                raise RuntimeError(
+                    "paper translation violates SQLite constraints"
+                )
+            self._db.execute("COMMIT")
+            return registration
         except Exception:
             if self._db.in_transaction:
                 self._db.execute("ROLLBACK")
@@ -1459,6 +2193,26 @@ class _SQLiteStore:
                         parsed_member.get("position") == member_row["position"],
                     )
                 )
+            elif artifact_kind == "paper_annotation_set":
+                metadata_matches = all(
+                    (
+                        parsed_member.get("annotation_id")
+                        == member_row["member_id"],
+                        parsed_member.get("annotation_set_id")
+                        == str(artifact_id),
+                        member_row["parent_id"] is None,
+                        parsed_member.get("position") == member_row["position"],
+                    )
+                )
+            elif artifact_kind == "paper_translation":
+                metadata_matches = all(
+                    (
+                        parsed_member.get("page_id") == member_row["member_id"],
+                        parsed_member.get("translation_id") == str(artifact_id),
+                        member_row["parent_id"] is None,
+                        parsed_member.get("position") == member_row["position"],
+                    )
+                )
             else:
                 metadata_matches = all(
                     (
@@ -1479,7 +2233,9 @@ class _SQLiteStore:
             model: (
                 type[PaperChunkSet]
                 | type[PaperGlobalSummary]
+                | type[PaperAnnotationSet]
                 | type[PaperStructureTree]
+                | type[PaperTranslation]
             ) = PaperChunkSet
         elif artifact_kind == "paper_summary":
             if members:
@@ -1487,6 +2243,9 @@ class _SQLiteStore:
                     f"Stale paper artifact '{artifact_id}': summary has members"
                 )
             model = PaperGlobalSummary
+        elif artifact_kind == "paper_annotation_set":
+            payload_value["annotations"] = members
+            model = PaperAnnotationSet
         elif artifact_kind == "paper_structure_tree":
             payload_value["nodes"] = {
                 str(member["node_id"]): member
@@ -1494,6 +2253,9 @@ class _SQLiteStore:
                 if isinstance(member, dict)
             }
             model = PaperStructureTree
+        elif artifact_kind == "paper_translation":
+            payload_value["pages"] = members
+            model = PaperTranslation
         else:
             raise RuntimeError(
                 f"Stale paper artifact '{artifact_id}': unsupported kind "
@@ -1531,7 +2293,10 @@ class _SQLiteStore:
             )
         expected_target_count = (
             0
-            if isinstance(artifact, PaperStructureTree)
+            if isinstance(
+                artifact,
+                (PaperStructureTree, PaperAnnotationSet, PaperTranslation),
+            )
             else 1
             if isinstance(artifact, PaperGlobalSummary)
             else len(artifact.chunks)
@@ -1551,6 +2316,19 @@ class _SQLiteStore:
                     f"Stale paper artifact '{artifact_id}': source span "
                     "mismatch"
                 ) from exc
+        if isinstance(artifact, PaperTranslation):
+            try:
+                PaperTranslatedResult(
+                    source_revision=self.get_paper_source(
+                        artifact.source_revision_id
+                    ),
+                    translation=artifact,
+                )
+            except (KeyError, ValidationError, ValueError) as exc:
+                raise RuntimeError(
+                    f"Stale paper artifact '{artifact_id}': translation "
+                    "source mismatch"
+                ) from exc
         lineage_rows = self._db.execute(
             """
             SELECT input_artifact_id, relation
@@ -1565,7 +2343,7 @@ class _SQLiteStore:
                 (str(locator.artifact_id), "generated_from")
                 for locator in artifact.derived_from
             }
-            if isinstance(artifact, PaperGlobalSummary)
+            if isinstance(artifact, (PaperGlobalSummary, PaperAnnotationSet))
             else set()
         )
         stored_lineage = {
@@ -1630,6 +2408,634 @@ class _SQLiteStore:
             global_summary=summary,
         )
 
+    def get_registration(
+        self, registration_id: UUID
+    ) -> PaperRegistrationRecord:
+        """Return one validated atomic-registration audit record."""
+        row = self._db.execute(
+            """
+            SELECT * FROM paper_registration_records
+            WHERE registration_id = ?
+            """,
+            (str(registration_id),),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"Paper registration '{registration_id}' not found")
+        return _load_registration_row(row)
+
+    def get_translation_registration(
+        self,
+        registration_id: UUID,
+    ) -> PaperTranslationRegistrationRecord:
+        """Return one validated immutable translation audit record."""
+        row = self._db.execute(
+            """
+            SELECT * FROM paper_translation_registration_records
+            WHERE registration_id = ?
+            """,
+            (str(registration_id),),
+        ).fetchone()
+        if row is None:
+            raise KeyError(
+                f"Paper translation registration '{registration_id}' not found"
+            )
+        return _load_translation_registration_row(row)
+
+    def get_translation(
+        self,
+        translation_id: UUID,
+    ) -> PaperTranslatedResult:
+        """Load one translation together with its exact stored source."""
+        artifact = self.get_paper_artifact(translation_id)
+        if not isinstance(artifact, PaperTranslation):
+            raise KeyError(
+                f"Paper artifact '{translation_id}' is not a translation"
+            )
+        return PaperTranslatedResult(
+            source_revision=self.get_paper_source(artifact.source_revision_id),
+            translation=artifact,
+        )
+
+    def get_annotated_paper(
+        self, registration_id: UUID
+    ) -> PaperAnnotatedResult:
+        """Rehydrate the exact four-part bundle named by a registration."""
+        registration = self.get_registration(registration_id)
+        source = self.get_paper_source(registration.source_revision_id)
+        chunk_set = self.get_paper_artifact(registration.chunk_set_id)
+        summary = self.get_paper_artifact(registration.summary_id)
+        annotation_set = self.get_paper_artifact(registration.annotation_set_id)
+        if (
+            not isinstance(chunk_set, PaperChunkSet)
+            or not isinstance(summary, PaperGlobalSummary)
+            or not isinstance(annotation_set, PaperAnnotationSet)
+        ):
+            raise RuntimeError(
+                f"Stale paper registration '{registration_id}': "
+                "artifact types are inconsistent"
+            )
+        try:
+            return PaperAnnotatedResult(
+                source_revision=source,
+                chunk_set=chunk_set,
+                global_summary=summary,
+                annotation_set=annotation_set,
+            )
+        except ValidationError as exc:
+            raise RuntimeError(
+                f"Stale paper registration '{registration_id}': "
+                "artifact links are inconsistent"
+            ) from exc
+
+    def find_paper_source(self, content_hash: str) -> UUID | None:
+        """Return the exact source ID for a SHA-256 hash, if present."""
+        if len(content_hash) != 64 or any(
+            character not in "0123456789abcdef" for character in content_hash
+        ):
+            raise ValueError("content_hash must be a lowercase SHA-256 value")
+        row = self._db.execute(
+            """
+            SELECT source_revision_id FROM paper_sources
+            WHERE source_content_hash = ?
+            """,
+            (content_hash,),
+        ).fetchone()
+        return UUID(str(row["source_revision_id"])) if row is not None else None
+
+    def list_registrations(
+        self,
+        source_revision_id: UUID | None = None,
+        *,
+        limit: int = 100,
+    ) -> tuple[PaperRegistrationRecord, ...]:
+        """List newest registration evidence globally or for one source."""
+        if not 1 <= limit <= 1_000:
+            raise ValueError("registration limit must be between 1 and 1000")
+        if source_revision_id is None:
+            rows = self._db.execute(
+                """
+                SELECT * FROM paper_registration_records
+                ORDER BY registered_at DESC, registration_id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        else:
+            rows = self._db.execute(
+                """
+                SELECT * FROM paper_registration_records
+                WHERE source_revision_id = ?
+                ORDER BY registered_at DESC, registration_id DESC
+                LIMIT ?
+                """,
+                (str(source_revision_id), limit),
+            ).fetchall()
+        return tuple(_load_registration_row(row) for row in rows)
+
+    def list_translation_registrations(
+        self,
+        source_revision_id: UUID | None = None,
+        *,
+        limit: int = 100,
+    ) -> tuple[PaperTranslationRegistrationRecord, ...]:
+        """List newest translation registrations globally or by source."""
+        if not 1 <= limit <= 1_000:
+            raise ValueError(
+                "translation registration limit must be between 1 and 1000"
+            )
+        if source_revision_id is None:
+            rows = self._db.execute(
+                """
+                SELECT * FROM paper_translation_registration_records
+                ORDER BY registered_at DESC, registration_id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        else:
+            rows = self._db.execute(
+                """
+                SELECT * FROM paper_translation_registration_records
+                WHERE source_revision_id = ?
+                ORDER BY registered_at DESC, registration_id DESC
+                LIMIT ?
+                """,
+                (str(source_revision_id), limit),
+            ).fetchall()
+        return tuple(_load_translation_registration_row(row) for row in rows)
+
+    def _paper_catalog_entry(self, row: sqlite3.Row) -> PaperCatalogEntry:
+        """Build one fast source-level health projection from aggregate rows."""
+        source_id = UUID(str(row["source_revision_id"]))
+        try:
+            authors_value = json.loads(str(row["authors_text"]))
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"Stale paper catalog '{source_id}': invalid authors"
+            ) from exc
+        if not isinstance(authors_value, list) or not all(
+            isinstance(author, str) for author in authors_value
+        ):
+            raise RuntimeError(
+                f"Stale paper catalog '{source_id}': invalid authors"
+            )
+
+        registration_count = int(row["registration_count"])
+        latest_registration: PaperRegistrationRecord | None = None
+        reasons: list[str] = []
+        broken = False
+        latest_id = row["latest_registration_id"]
+        if registration_count == 0 or latest_id is None:
+            broken = True
+            reasons.append("missing_registration")
+        else:
+            try:
+                latest_registration = self.get_registration(
+                    UUID(str(latest_id))
+                )
+            except (KeyError, RuntimeError, ValueError):
+                broken = True
+                reasons.append("invalid_registration")
+
+        if latest_registration is not None:
+            if latest_registration.passed_checks != _REGISTRATION_CHECKS:
+                broken = True
+                reasons.append("incomplete_registration_checks")
+            registered_artifacts = self._db.execute(
+                """
+                SELECT artifact_id, artifact_kind, member_count, target_count
+                FROM paper_artifacts
+                WHERE artifact_id IN (?, ?, ?)
+                """,
+                (
+                    str(latest_registration.chunk_set_id),
+                    str(latest_registration.summary_id),
+                    str(latest_registration.annotation_set_id),
+                ),
+            ).fetchall()
+            if len(registered_artifacts) != 3:
+                broken = True
+                reasons.append("missing_registered_artifact")
+            for artifact_row in registered_artifacts:
+                artifact_id = str(artifact_row["artifact_id"])
+                member_count = int(artifact_row["member_count"])
+                target_count = int(artifact_row["target_count"])
+                actual_members = int(
+                    self._db.execute(
+                        """
+                        SELECT COUNT(*) FROM paper_artifact_members
+                        WHERE artifact_id = ?
+                        """,
+                        (artifact_id,),
+                    ).fetchone()[0]
+                )
+                projection_rows = self._db.execute(
+                    """
+                    SELECT embedding_model, dimension
+                    FROM paper_projections WHERE artifact_id = ?
+                    """,
+                    (artifact_id,),
+                ).fetchall()
+                if (
+                    actual_members != member_count
+                    or len(projection_rows) != target_count
+                ):
+                    broken = True
+                    reasons.append("artifact_count_mismatch")
+                if any(
+                    str(projection["embedding_model"])
+                    != latest_registration.embedding_model
+                    or int(projection["dimension"])
+                    != latest_registration.embedding_dimensions
+                    for projection in projection_rows
+                ):
+                    broken = True
+                    reasons.append("embedding_identity_mismatch")
+
+        if self._db.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            broken = True
+            reasons.append("foreign_key_violation")
+        if not broken:
+            if row["title"] is None:
+                reasons.append("missing_title")
+            if row["published_at"] is None:
+                reasons.append("missing_published_at")
+            if int(row["empty_page_count"]):
+                reasons.append("empty_pages")
+            if int(row["artifact_version_count"]) > 3:
+                reasons.append("multiple_artifact_versions")
+        health = "broken" if broken else "attention" if reasons else "ready"
+        return PaperCatalogEntry(
+            source_revision_id=source_id,
+            source_content_hash=str(row["source_content_hash"]),
+            title=(str(row["title"]) if row["title"] is not None else None),
+            authors=tuple(authors_value),
+            published_at=(
+                datetime.fromtimestamp(float(row["published_at"]), timezone.utc)
+                if row["published_at"] is not None
+                else None
+            ),
+            available_at=datetime.fromtimestamp(
+                float(row["available_at"]), timezone.utc
+            ),
+            source_kind=str(row["source_kind"]),
+            source_uri=str(row["source_uri"]),
+            page_count=int(row["page_count"]),
+            empty_page_count=int(row["empty_page_count"]),
+            chunk_count=int(row["chunk_count"]),
+            annotation_count=int(row["annotation_count"]),
+            translation_count=int(row["translation_count"]),
+            registration_count=registration_count,
+            latest_registered_at=(
+                latest_registration.registered_at
+                if latest_registration is not None
+                else None
+            ),
+            embedding_model=(
+                latest_registration.embedding_model
+                if latest_registration is not None
+                else None
+            ),
+            embedding_dimensions=(
+                latest_registration.embedding_dimensions
+                if latest_registration is not None
+                else None
+            ),
+            health=health,
+            health_reasons=tuple(dict.fromkeys(reasons)),
+        )
+
+    def _all_catalog_entries(self) -> list[PaperCatalogEntry]:
+        rows = self._db.execute(
+            """
+            SELECT c.*,
+                COALESCE((
+                    SELECT SUM(a.member_count) FROM paper_artifacts AS a
+                    WHERE a.source_revision_id = c.source_revision_id
+                      AND a.artifact_kind = 'paper_chunk_set'
+                ), 0) AS chunk_count,
+                COALESCE((
+                    SELECT SUM(a.member_count) FROM paper_artifacts AS a
+                    WHERE a.source_revision_id = c.source_revision_id
+                      AND a.artifact_kind = 'paper_annotation_set'
+                ), 0) AS annotation_count,
+                (SELECT COUNT(*) FROM paper_artifacts AS a
+                 WHERE a.source_revision_id = c.source_revision_id
+                   AND a.artifact_kind = 'paper_translation')
+                    AS translation_count,
+                (SELECT COUNT(*) FROM paper_artifacts AS a
+                 WHERE a.source_revision_id = c.source_revision_id
+                   AND a.artifact_kind IN (
+                       'paper_chunk_set', 'paper_summary',
+                       'paper_annotation_set'
+                   ))
+                    AS artifact_version_count,
+                (SELECT COUNT(*) FROM paper_registration_records AS r
+                 WHERE r.source_revision_id = c.source_revision_id)
+                    AS registration_count,
+                (SELECT r.registration_id
+                 FROM paper_registration_records AS r
+                 WHERE r.source_revision_id = c.source_revision_id
+                 ORDER BY r.registered_at DESC, r.registration_id DESC
+                 LIMIT 1) AS latest_registration_id
+            FROM paper_catalog AS c
+            """
+        ).fetchall()
+        return [self._paper_catalog_entry(row) for row in rows]
+
+    @staticmethod
+    def _catalog_signature(query: PaperCatalogQuery) -> str:
+        payload = _json_payload(
+            query.model_dump(
+                mode="json", exclude={"cursor", "limit"}, exclude_none=False
+            )
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _catalog_sort_value(
+        entry: PaperCatalogEntry, sort: str
+    ) -> str | float | None:
+        if sort == "registered_desc":
+            return (
+                entry.latest_registered_at.timestamp()
+                if entry.latest_registered_at is not None
+                else None
+            )
+        if sort == "published_desc":
+            return (
+                entry.published_at.timestamp()
+                if entry.published_at is not None
+                else None
+            )
+        return entry.title.casefold() if entry.title is not None else None
+
+    def list_papers(
+        self, query: PaperCatalogQuery | None = None
+    ) -> PaperCatalogPage:
+        """List filtered paper sources with stable opaque cursor pagination."""
+        selected_query = query or PaperCatalogQuery()
+        entries = self._all_catalog_entries()
+        text = selected_query.text.casefold() if selected_query.text else None
+        if text is not None:
+            entries = [
+                entry
+                for entry in entries
+                if text
+                in " ".join(
+                    (
+                        entry.title or "",
+                        " ".join(entry.authors),
+                        entry.source_uri,
+                    )
+                ).casefold()
+            ]
+        if selected_query.source_kinds:
+            source_kinds = set(selected_query.source_kinds)
+            entries = [
+                entry for entry in entries if entry.source_kind in source_kinds
+            ]
+        if selected_query.published_from is not None:
+            entries = [
+                entry
+                for entry in entries
+                if entry.published_at is not None
+                and entry.published_at >= selected_query.published_from
+            ]
+        if selected_query.published_to is not None:
+            entries = [
+                entry
+                for entry in entries
+                if entry.published_at is not None
+                and entry.published_at <= selected_query.published_to
+            ]
+        if selected_query.health is not None:
+            entries = [
+                entry
+                for entry in entries
+                if entry.health == selected_query.health
+            ]
+        if selected_query.sort == "title_asc":
+            entries.sort(
+                key=lambda entry: (
+                    entry.title is None,
+                    (entry.title or "").casefold(),
+                    str(entry.source_revision_id),
+                )
+            )
+        elif selected_query.sort == "published_desc":
+            entries.sort(
+                key=lambda entry: (
+                    entry.published_at is None,
+                    -(
+                        entry.published_at.timestamp()
+                        if entry.published_at is not None
+                        else 0.0
+                    ),
+                    str(entry.source_revision_id),
+                )
+            )
+        else:
+            entries.sort(
+                key=lambda entry: (
+                    entry.latest_registered_at is None,
+                    -(
+                        entry.latest_registered_at.timestamp()
+                        if entry.latest_registered_at is not None
+                        else 0.0
+                    ),
+                    str(entry.source_revision_id),
+                )
+            )
+        total_count = len(entries)
+        start = 0
+        signature = self._catalog_signature(selected_query)
+        if selected_query.cursor is not None:
+            try:
+                cursor_payload = json.loads(
+                    urlsafe_b64decode(
+                        selected_query.cursor.encode("ascii")
+                    ).decode("utf-8")
+                )
+                last_id = str(cursor_payload["last_id"])
+                last_sort = cursor_payload["last_sort"]
+                if cursor_payload["signature"] != signature:
+                    raise ValueError
+            except (
+                ValueError,
+                KeyError,
+                TypeError,
+                json.JSONDecodeError,
+            ) as exc:
+                raise ValueError("catalog cursor does not match query") from exc
+            for position, entry in enumerate(entries):
+                if (
+                    str(entry.source_revision_id) == last_id
+                    and self._catalog_sort_value(entry, selected_query.sort)
+                    == last_sort
+                ):
+                    start = position + 1
+                    break
+            else:
+                raise ValueError("catalog cursor no longer resolves")
+        page_entries = entries[start : start + selected_query.limit]
+        next_cursor: str | None = None
+        if start + len(page_entries) < total_count and page_entries:
+            last = page_entries[-1]
+            cursor_value = _json_payload(
+                {
+                    "last_id": str(last.source_revision_id),
+                    "last_sort": self._catalog_sort_value(
+                        last, selected_query.sort
+                    ),
+                    "signature": signature,
+                }
+            )
+            next_cursor = urlsafe_b64encode(
+                cursor_value.encode("utf-8")
+            ).decode("ascii")
+        return PaperCatalogPage(
+            entries=tuple(page_entries),
+            next_cursor=next_cursor,
+            total_count=total_count,
+        )
+
+    def get_paper_details(
+        self,
+        source_revision_id: UUID,
+        *,
+        registration_id: UUID | None,
+    ) -> PaperDetails:
+        """Return deep-validated canonical values for one catalog source."""
+        source = self.get_paper_source(source_revision_id)
+        registrations = self.list_registrations(source_revision_id, limit=1_000)
+        translation_registrations = self.list_translation_registrations(
+            source_revision_id,
+            limit=1_000,
+        )
+        if registration_id is not None and all(
+            record.registration_id != registration_id
+            for record in registrations
+        ):
+            raise KeyError(
+                f"Paper registration '{registration_id}' does not belong to "
+                f"source '{source_revision_id}'"
+            )
+        rows = self._db.execute(
+            """
+            SELECT artifact_id FROM paper_artifacts
+            WHERE source_revision_id = ?
+              AND artifact_kind IN (
+                  'paper_chunk_set', 'paper_summary', 'paper_annotation_set',
+                  'paper_translation'
+              )
+            ORDER BY artifact_kind, artifact_id
+            """,
+            (str(source_revision_id),),
+        ).fetchall()
+        artifacts = [
+            self.get_paper_artifact(UUID(str(row["artifact_id"])))
+            for row in rows
+        ]
+        entry = next(
+            (
+                value
+                for value in self._all_catalog_entries()
+                if value.source_revision_id == source_revision_id
+            ),
+            None,
+        )
+        if entry is None:
+            raise RuntimeError(
+                f"Stale paper catalog '{source_revision_id}': row missing"
+            )
+        return PaperDetails(
+            source=source,
+            registrations=registrations,
+            chunk_sets=tuple(
+                artifact
+                for artifact in artifacts
+                if isinstance(artifact, PaperChunkSet)
+            ),
+            summaries=tuple(
+                artifact
+                for artifact in artifacts
+                if isinstance(artifact, PaperGlobalSummary)
+            ),
+            annotation_sets=tuple(
+                artifact
+                for artifact in artifacts
+                if isinstance(artifact, PaperAnnotationSet)
+            ),
+            translations=tuple(
+                artifact
+                for artifact in artifacts
+                if isinstance(artifact, PaperTranslation)
+            ),
+            translation_registrations=translation_registrations,
+            selected_registration_id=registration_id,
+            health=entry.health,
+            health_reasons=entry.health_reasons,
+        )
+
+    def get_paper_asset(
+        self, source_revision_id: UUID, asset_id: UUID
+    ) -> PaperAssetPayload:
+        """Return exact validated bytes for one persisted source asset."""
+        source = self.get_paper_source(source_revision_id)
+        asset = next(
+            (value for value in source.assets if value.asset_id == asset_id),
+            None,
+        )
+        if asset is None:
+            raise KeyError(
+                f"Paper asset '{asset_id}' not found for source "
+                f"'{source_revision_id}'"
+            )
+        suffix = {
+            "application/pdf": ".pdf",
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+        }.get(asset.media_type, ".bin")
+        filename = (
+            "source.pdf"
+            if asset.kind == "raw"
+            else f"page-{asset.page_number or 0}-{asset.kind}{suffix}"
+        )
+        return PaperAssetPayload(
+            source_revision_id=source_revision_id,
+            asset_id=asset.asset_id,
+            media_type=asset.media_type,
+            content_hash=asset.content_hash,
+            filename=filename,
+            content=source.blob_for(asset.asset_id),
+        )
+
+    def inspect_library(self) -> PaperLibraryStats:
+        """Return source-level dashboard statistics without loading models."""
+        entries = self._all_catalog_entries()
+        database_size = (
+            self._database_path.stat().st_size
+            if self._database_path is not None and self._database_path.exists()
+            else None
+        )
+        return PaperLibraryStats(
+            source_revision_count=len(entries),
+            search_ready_count=sum(
+                entry.health == "ready" for entry in entries
+            ),
+            attention_count=sum(
+                entry.health == "attention" for entry in entries
+            ),
+            broken_count=sum(entry.health == "broken" for entry in entries),
+            total_pages=sum(entry.page_count for entry in entries),
+            total_annotations=sum(entry.annotation_count for entry in entries),
+            total_translations=sum(
+                entry.translation_count for entry in entries
+            ),
+            database_size_bytes=database_size,
+        )
+
     def resolve_paper_locator(
         self, locator: ArtifactLocator
     ) -> ResolvedPaperArtifact:
@@ -1651,6 +3057,18 @@ class _SQLiteStore:
                 raise KeyError(
                     f"Paper structure node '{locator.member_id}' not found"
                 ) from exc
+        if isinstance(artifact, PaperAnnotationSet):
+            for annotation in artifact.annotations:
+                if annotation.annotation_id == locator.member_id:
+                    return annotation
+            raise KeyError(f"Paper annotation '{locator.member_id}' not found")
+        if isinstance(artifact, PaperTranslation):
+            for page in artifact.pages:
+                if page.page_id == locator.member_id:
+                    return page
+            raise KeyError(
+                f"Paper translation page '{locator.member_id}' not found"
+            )
         if not isinstance(artifact, PaperChunkSet):
             raise KeyError("Paper artifact does not have resolvable members")
         for chunk in artifact.chunks:

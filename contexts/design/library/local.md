@@ -4,7 +4,7 @@
 
 - **Purpose**: Define how the local library stores validated knowledge and source-first papers, then searches rebuildable projections.
 - **Read when**: Changing `LocalKnowledgeLibrary`, SQLite schema, semantic projections, filters, hit locators, or file ownership.
-- **Status**: Implemented by `quantmind.library` with SQLite schema version 4 and private LlamaIndex ranking.
+- **Status**: Implemented by `quantmind.library` with SQLite schema version 7 and private LlamaIndex ranking.
 - **Core rule**: Canonical sources and artifacts are durable; projection text, vectors, and private indexes are rebuildable.
 - **User guide**: [`docs/library.md`](../../../docs/library.md)
 
@@ -31,14 +31,24 @@
 | `open()` | Open or migrate a SQLite library without network I/O. |
 | `put()` | Store one conventional `BaseKnowledge` item and its required projections. |
 | `put_paper()` | Store one `PaperSemanticResult`, including exact source assets, two artifacts, lineage, and required projections. |
+| `put_annotated_paper()` | Atomically store source, chunks, summary, annotations, projections, immutable registration audit, and catalog projection. |
+| `put_translation()` | Atomically store one exact source, complete page translation, and immutable audit without embeddings. |
 | `put_paper_structure_tree()` | Atomically store one exact source revision and validated structure tree without projections or embeddings. |
 | `get()` | Rehydrate one conventional knowledge item. |
 | `get_paper()` | Rehydrate one unambiguous source/chunk-set/summary result, or use explicit artifact IDs when versions coexist. |
+| `get_annotated_paper()` / `get_registration()` | Rehydrate the exact registered bundle or its immutable audit record. |
+| `open_translation()` / `get_translation_registration()` | Rehydrate one self-contained translation or its immutable audit record. |
 | `get_artifact()` | Rehydrate a paper chunk set, global summary, or structure tree by artifact ID. |
+| `list_papers()` / `get_paper_details()` / `get_paper_asset()` | Read the bounded catalog, deep canonical detail, or validated source bytes. |
+| `list_registrations()` / `inspect_library()` | Read audit history and fast source-level health counts without loading embeddings. |
 | `search()` | Filter and rank rebuildable projections, returning `SemanticHit` evidence. |
 | `resolve()` | Resolve a hit locator to its canonical aggregate or member. |
 
-The public types are `LocalKnowledgeLibrary`, `SemanticQuery`, `SemanticHit`, and `SearchProjection`. SQLite rows, embedding providers, LlamaIndex nodes, retrievers, and indexes remain private.
+The public surface also includes immutable registration, catalog, details,
+asset, and statistics values. SQLite rows, embedding providers, LlamaIndex
+nodes, retrievers, and indexes remain private. `open_local()` binds exactly one
+pinned multilingual E5 revision; it is a convenience constructor, not a
+provider registry.
 
 ## Ownership
 
@@ -54,7 +64,7 @@ For conventional `BaseKnowledge`, source references remain pointers and the call
 
 ## Canonical Storage
 
-SQLite schema version 4 keeps conventional and source-first paper storage explicit and permits vectorless paper artifacts.
+SQLite schema version 7 keeps conventional and source-first paper storage explicit and permits vectorless paper artifacts.
 
 Conventional knowledge uses:
 
@@ -66,10 +76,13 @@ Source-first papers use:
 
 - `paper_sources` for immutable source-revision metadata and canonical manifests;
 - `paper_source_assets` for linked content-addressed bytes and asset metadata;
-- `paper_artifacts` for independently versioned chunk sets, summaries, and structure trees;
-- `paper_artifact_members` for directly addressable chunks or structure nodes;
+- `paper_artifacts` for independently versioned chunk sets, summaries, structure trees, and translations;
+- `paper_artifact_members` for directly addressable chunks, structure nodes, or translation pages;
 - `paper_artifact_lineage` for derived-artifact input relationships such as summary-to-chunk-set provenance;
 - `paper_projections` for rebuildable summary and chunk text embeddings.
+- `paper_registration_records` for immutable, idempotent registration evidence;
+- `paper_translation_registration_records` for immutable, idempotent translation audit;
+- `paper_catalog` for rebuildable source-level management counts and health inputs.
 
 There is no single opaque paper JSON blob and no canonical vector field. Aggregate JSON and normalized relationship rows are cross-checked during rehydration.
 
@@ -82,6 +95,19 @@ The transaction writes or reuses the source, asset blobs, artifacts, members, li
 Putting an unchanged result is idempotent and reuses valid vectors. The same source may own multiple chunk-set and summary versions. Artifact identity includes producer configuration, so one version never silently replaces another.
 
 `put_paper_structure_tree(source, tree)` is a separate vectorless transaction. It validates that every node citation belongs to the exact source, writes or reuses the source and its assets, then stores the tree and normalized members. It does not require `put_paper()`, a chunk set, an embedding provider call, or artifact-lineage rows.
+
+`put_annotated_paper()` prepares every new summary/chunk embedding before one
+transaction writes or reuses the source, assets, three artifacts, normalized
+members, lineage, projections, registration record, and catalog row. Its eight
+recorded checks cover source hash, assets, pages, chunk spans, summary and
+annotation citations, vectors, and SQLite constraints. An identical bundle
+returns the original registration and timestamp.
+
+`put_translation()` validates the source bytes and exact page-text alignment,
+then writes or reuses the source, translation aggregate, normalized pages, and
+registration in one transaction. It creates no projection, never calls the
+embedding provider, and returns the original registration/timestamp for an
+identical translation.
 
 ## Search Projections
 
@@ -97,7 +123,13 @@ Every stored projection records target identity, exact projection text and hash,
 
 ## Search and Resolution
 
-`SemanticQuery.artifact_kinds` is a Pydantic-validated list of `PaperArtifactKind` values rather than an open string list. `PaperArtifactKind.GLOBAL_SUMMARY` selects summary aggregates and `PaperArtifactKind.CHUNK_SET` selects chunk members owned by chunk-set artifacts. JSON and YAML callers may still use the enum values `paper_summary` and `paper_chunk_set`; unknown values fail validation. Existing `item_types`, source, confidence, tag, tree, `as_of`, and `available_at` filters continue to apply where meaningful. Filtering happens before ranking.
+`SemanticQuery.artifact_kinds` is a Pydantic-validated list of
+`PaperArtifactKind` values rather than an open string list.
+`source_revision_ids` optionally restricts candidates before ranking, allowing
+the UI sidecar to resolve tags, collections, reading state, and stars without
+joining or querying private canonical tables. An empty source tuple means no
+candidate hits. Existing financial-time and conventional filters continue to
+apply where meaningful.
 
 Each `SemanticHit` carries two complementary values:
 
@@ -124,7 +156,12 @@ Paper projections inherit both times from their exact source revision. This prev
 
 ## Integrity and Migration
 
-Open performs an explicit SQLite user-version migration from schema 2 to schema 3 by adding paper tables and indexes without rewriting conventional knowledge. Older canonical class references for the pre-V1 paper tree load as `LegacyPaper` solely for database compatibility. Schema 3 to 4 permits zero-projection artifacts and adds hierarchical member parents without rewriting conventional knowledge.
+Open performs the explicit 2→3→4→5→6→7 migration chain. Schema 5→6 adds
+registration and catalog tables, then backfills catalog rows by rehydrating and
+validating existing source/artifact values in the migration transaction.
+Schema 6→7 adds translation registration audit without rewriting prior values.
+Canonical payloads and hashes are not rewritten. Older pre-V1 paper values
+remain readable solely through `LegacyPaper` compatibility.
 
 Reads fail closed when canonical hashes, counts, IDs, membership, lineage, source relationships, vector bytes, or asset metadata disagree. Blob SHA-256 hashes and byte lengths are checked, and stored asset table fields must match the canonical source manifest. Missing IDs raise `KeyError`; stale or corrupt linked state raises `RuntimeError` with context.
 
@@ -141,4 +178,5 @@ PageIndex-style retrieval is not required to use `LocalKnowledgeLibrary.search()
 - answer synthesis or agent memory;
 - merging distinct canonical identities;
 - per-node structure projections or implicit hybrid seeding;
+- annotation embeddings, hybrid search, reranking, ANN tuning, or multiple local models;
 - treating rebuildable projections as canonical knowledge.

@@ -41,7 +41,10 @@ contexts/
 │   ├── github-writing.md       ← GitHub prose style (no hard-wrap)
 │   └── harness-engineering.md  ← enforcement layers, hooks, rules, alignment
 └── usage/
-    └── README.md               ← using QuantMind as a library
+    ├── README.md               ← using QuantMind as a library
+    ├── codex-paper-draft-v1.md ← exact interactive draft contract
+    ├── codex-paper-translation-v1.md ← page translation contract
+    └── codex-paper-registration.md ← API-key-free operator procedure
 ```
 
 ## Where to Start

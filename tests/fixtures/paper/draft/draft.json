@@ -1,0 +1,49 @@
+{
+  "annotations": [
+    {
+      "citations": [
+        {
+          "page_number": 2,
+          "quote": "The method ranks securities by trailing excess return."
+        }
+      ],
+      "kind": "source_fact",
+      "text": "The synthetic method ranks securities using trailing excess returns."
+    },
+    {
+      "citations": [
+        {
+          "page_number": 4,
+          "quote": "The fixture uses synthetic observations and no investable returns."
+        }
+      ],
+      "kind": "codex_interpretation",
+      "text": "The document is useful for validating evidence handling, not for drawing investment conclusions."
+    }
+  ],
+  "generator": {
+    "draft_policy_version": "cited-paper-draft-v1",
+    "instructions_sha256": "71ff728c8142c2e125c3f1f876e6587aa3254b9e9ae0c773dd31e45cdb6983ae",
+    "kind": "codex-interactive",
+    "model_label": null
+  },
+  "schema_version": "1",
+  "source_content_hash": "455a839c24d5c272de6f10170b05c99eecf27cac9dea88c0787403cd8c2e4cd5",
+  "summary": {
+    "citations": [
+      {
+        "page_number": 1,
+        "quote": "The introduction defines a twelve-month lookback signal."
+      },
+      {
+        "page_number": 3,
+        "quote": "Signals are lagged by one period so that the illustrative construction"
+      },
+      {
+        "page_number": 4,
+        "quote": "The highest-ranked quintile is held long and the lowest-ranked quintile"
+      }
+    ],
+    "text": "This synthetic study describes a cross-sectional momentum construction with a twelve-month lookback, lagged signals, monthly ranking, equal-weighted quintiles, and a long-short portfolio. It explicitly excludes investable-performance claims."
+  }
+}

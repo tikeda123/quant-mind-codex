@@ -11,6 +11,7 @@ from quantmind.knowledge import (
     Factor,
     FlattenKnowledge,
     News,
+    PaperAnnotatedResult,
     PaperSemanticResult,
     Thesis,
     TreeKnowledge,
@@ -90,7 +91,9 @@ def _project_knowledge(item: BaseKnowledge) -> list[_RetrievalTarget]:
     return targets
 
 
-def _project_paper(result: PaperSemanticResult) -> list[_RetrievalTarget]:
+def _project_paper(
+    result: PaperSemanticResult | PaperAnnotatedResult,
+) -> list[_RetrievalTarget]:
     """Project a cited summary and every non-empty chunk for text search."""
     source_id = result.source_revision.id
     summary = result.global_summary

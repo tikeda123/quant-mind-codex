@@ -1,5 +1,7 @@
 import json
+import shutil
 import sqlite3
+import tempfile
 import unittest
 from collections.abc import Sequence
 from datetime import datetime, timezone
@@ -42,7 +44,9 @@ class _QueryEmbeddingProvider:
         *,
         model: str,
         dimensions: int | None,
+        purpose: str,
     ) -> list[list[float]]:
+        del purpose
         self.calls.append((model, dimensions, tuple(texts)))
         if model != "text-embedding-3-small" or dimensions != 1536:
             raise ValueError("Unexpected prebuilt embedding metadata")
@@ -117,7 +121,11 @@ class ExampleBundleSearchTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_prebuilt_bundle_searches_and_matches_source_json(self):
         self.assertTrue(_DATABASE_PATH.is_file())
-        with sqlite3.connect(_DATABASE_PATH) as db:
+        temporary = tempfile.TemporaryDirectory()
+        self.addAsyncCleanup(temporary.cleanup)
+        database_path = Path(temporary.name) / "ai_infrastructure.db"
+        shutil.copyfile(_DATABASE_PATH, database_path)
+        with sqlite3.connect(database_path) as db:
             self.assertEqual(
                 db.execute("SELECT COUNT(*) FROM knowledge_items").fetchone()[
                     0
@@ -148,7 +156,7 @@ class ExampleBundleSearchTests(unittest.IsolatedAsyncioTestCase):
 
         provider = _QueryEmbeddingProvider()
         library = await LocalKnowledgeLibrary.open(
-            _DATABASE_PATH,
+            database_path,
             embedding_model="text-embedding-3-small",
             embedding_dimensions=1536,
             _embedding_provider=provider,

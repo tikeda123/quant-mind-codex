@@ -27,8 +27,9 @@ class _FakeEmbeddingProvider:
         *,
         model: str,
         dimensions: int | None,
+        purpose: str,
     ) -> list[list[float]]:
-        del model
+        del model, purpose
         self.calls.append(tuple(texts))
         size = dimensions or 2
         return [
@@ -53,8 +54,9 @@ class _FailingEmbeddingProvider(_FakeEmbeddingProvider):
         *,
         model: str,
         dimensions: int | None,
+        purpose: str,
     ) -> list[list[float]]:
-        del texts, model, dimensions
+        del texts, model, dimensions, purpose
         raise RuntimeError("embedding unavailable")
 
 
@@ -85,7 +87,7 @@ class PaperLibraryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(provider.calls), 1)
         self.assertEqual(len(provider.calls[0]), 4)
         with sqlite3.connect(self.db_path) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 5)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 7)
             self.assertEqual(
                 db.execute("SELECT COUNT(*) FROM paper_sources").fetchone()[0],
                 1,

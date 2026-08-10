@@ -54,6 +54,63 @@ PaperInput = Annotated[
 ]
 
 
+class CitedPaperDraftInput(BaseInput):
+    """Staged source manifest and cited draft authored outside QuantMind.
+
+    Both files are local JSON. The manifest pins the exact PDF bytes and parser
+    output; the draft contains prose plus page-and-quote evidence coordinates.
+    ``PaperFlow`` validates and resolves those coordinates without calling an
+    LLM or refetching a URL.
+    """
+
+    type: Literal["cited-paper-draft"] = "cited-paper-draft"
+    manifest_path: Path
+    draft_path: Path
+
+
+class PaperTranslationDraftInput(BaseInput):
+    """Staged source manifest and page translation authored outside QuantMind."""
+
+    type: Literal["paper-translation-draft"] = "paper-translation-draft"
+    manifest_path: Path
+    draft_path: Path
+
+
+class PaperCitedDraftCfg(BaseFlowCfg):
+    """Deterministic policy for importing one externally authored draft."""
+
+    model: Literal["external-cited-draft"] = "external-cited-draft"
+    chunk_size: int = Field(default=384, gt=0)
+    chunk_overlap: int = Field(default=48, ge=0)
+    min_summary_citations: int = Field(default=3, ge=1)
+    min_summary_pages: int = Field(default=2, ge=1)
+    require_annotation_citations: Literal[True] = True
+    draft_policy_version: Literal["cited-paper-draft-v1"] = (
+        "cited-paper-draft-v1"
+    )
+
+    @model_validator(mode="after")
+    def _validate_paper_bounds(self) -> "PaperCitedDraftCfg":
+        if self.chunk_overlap >= self.chunk_size:
+            raise ValueError("chunk_overlap must be smaller than chunk_size")
+        if self.min_summary_pages > self.min_summary_citations:
+            raise ValueError(
+                "min_summary_pages cannot exceed min_summary_citations"
+            )
+        return self
+
+
+class PaperTranslationDraftCfg(BaseFlowCfg):
+    """Deterministic policy for importing one complete English-to-Japanese draft."""
+
+    model: Literal["external-translation-draft"] = "external-translation-draft"
+    source_language: Literal["en"] = "en"
+    target_language: Literal["ja"] = "ja"
+    draft_policy_version: Literal["paper-translation-draft-v1"] = (
+        "paper-translation-draft-v1"
+    )
+
+
 class PaperSemanticCfg(BaseFlowCfg):
     """Chunking and summarization controls for the semantic paper build.
 

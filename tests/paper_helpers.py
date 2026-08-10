@@ -10,10 +10,15 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from quantmind.knowledge import (
+    PaperAnnotatedResult,
+    PaperAnnotationDraft,
+    PaperAnnotationKind,
+    PaperAnnotationSet,
     PaperChunkingConfig,
     PaperChunkInput,
     PaperChunkSet,
     PaperCitationDraft,
+    PaperCitedDraftProducer,
     PaperGlobalSummary,
     PaperPageInput,
     PaperSemanticResult,
@@ -24,6 +29,9 @@ from quantmind.knowledge import (
     PaperStructureTree,
     PaperStructureTreeDraft,
     PaperSummaryProducer,
+    PaperTranslatedResult,
+    PaperTranslation,
+    PaperTranslationProducer,
 )
 
 _RAW_BYTES = b"deterministic paper source revision"
@@ -136,6 +144,65 @@ def build_paper_result(
     )
 
 
+def build_annotated_paper_result(
+    *,
+    draft_marker: str = "original",
+    when: datetime = _WHEN,
+) -> PaperAnnotatedResult:
+    """Build one cited summary/annotation result without IO or model calls."""
+    semantic = build_paper_result(when=when)
+    chunk_set = semantic.chunk_set
+    producer = PaperCitedDraftProducer(
+        input_chunk_set_id=chunk_set.id,
+        generator="codex-interactive",
+        model_label=None,
+        instructions_hash=hashlib.sha256(
+            b"cited paper instructions"
+        ).hexdigest(),
+        draft_content_hash=hashlib.sha256(
+            draft_marker.encode("utf-8")
+        ).hexdigest(),
+    )
+    citations = tuple(
+        PaperCitationDraft(
+            chunk_index=chunk.position,
+            page_number=chunk.source_spans[0].page_number,
+            quote=chunk.text,
+        )
+        for chunk in chunk_set.chunks
+    )
+    summary = PaperGlobalSummary.from_draft(
+        chunk_set,
+        producer=producer,
+        summary="A cited external summary of the Transformer paper.",
+        citations=citations,
+        min_citations=1,
+        min_pages=1,
+    )
+    annotation_set = PaperAnnotationSet.from_draft(
+        chunk_set,
+        producer=producer,
+        annotations=(
+            PaperAnnotationDraft(
+                kind=PaperAnnotationKind.SOURCE_FACT,
+                text="The source describes a recurrence-free architecture.",
+                citations=(citations[0],),
+            ),
+            PaperAnnotationDraft(
+                kind=PaperAnnotationKind.CODEX_INTERPRETATION,
+                text="Parallel attention is the central design shift.",
+                citations=(citations[1],),
+            ),
+        ),
+    )
+    return PaperAnnotatedResult(
+        source_revision=semantic.source_revision,
+        chunk_set=chunk_set,
+        global_summary=summary,
+        annotation_set=annotation_set,
+    )
+
+
 def build_paper_structure_tree(
     *,
     model: str = "fake-structure",
@@ -187,4 +254,35 @@ def build_paper_structure_tree(
         result.source_revision,
         producer=producer,
         draft=draft,
+    )
+
+
+def build_paper_translation_result(
+    *,
+    draft_marker: str = "original",
+    when: datetime = _WHEN,
+) -> PaperTranslatedResult:
+    """Build one complete page-aligned Japanese translation without IO."""
+    semantic = build_paper_result(when=when)
+    producer = PaperTranslationProducer(
+        generator="codex-interactive",
+        model_label=None,
+        instructions_hash=hashlib.sha256(
+            b"paper translation instructions"
+        ).hexdigest(),
+        draft_content_hash=hashlib.sha256(
+            draft_marker.encode("utf-8")
+        ).hexdigest(),
+    )
+    translation = PaperTranslation.from_draft(
+        semantic.source_revision,
+        producer=producer,
+        translated_pages=(
+            "Transformerは系列変換から再帰と畳み込みを取り除く。",
+            "マルチヘッド注意は並列射影を用い、翻訳と学習効率を改善する。",
+        ),
+    )
+    return PaperTranslatedResult(
+        source_revision=semantic.source_revision,
+        translation=translation,
     )

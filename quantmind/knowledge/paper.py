@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Literal
+from typing import Annotated, Literal, Union
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import (
@@ -32,7 +32,9 @@ class PaperArtifactKind(str, Enum):
 
     CHUNK_SET = "paper_chunk_set"
     GLOBAL_SUMMARY = "paper_summary"
+    ANNOTATION_SET = "paper_annotation_set"
     STRUCTURE_TREE = "paper_structure_tree"
+    TRANSLATION = "paper_translation"
 
 
 def _stable_hash(value: object) -> str:
@@ -1039,6 +1041,29 @@ class PaperSummaryProducer(BaseModel):
     research_group_size: int = Field(ge=1)
 
 
+class PaperCitedDraftProducer(BaseModel):
+    """Identity of one externally authored, code-validated cited draft."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    orchestration: Literal["cited-draft-v1"] = "cited-draft-v1"
+    input_chunk_set_id: UUID
+    generator: Literal["codex-interactive", "external-interactive"]
+    model_label: str | None = None
+    draft_schema_version: Literal["1"] = "1"
+    draft_policy_version: Literal["cited-paper-draft-v1"] = (
+        "cited-paper-draft-v1"
+    )
+    instructions_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    draft_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+PaperSummaryProducerType = Annotated[
+    Union[PaperSummaryProducer, PaperCitedDraftProducer],
+    Field(discriminator="orchestration"),
+]
+
+
 def _paper_summary_content_hash(
     summary: str,
     citations: tuple[PaperCitation, ...],
@@ -1064,7 +1089,7 @@ class PaperGlobalSummary(BaseModel):
     )
     schema_version: Literal["1.0"] = "1.0"
     source_revision_id: UUID
-    producer: PaperSummaryProducer
+    producer: PaperSummaryProducerType
     producer_config_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     summary: str = Field(min_length=1)
@@ -1118,7 +1143,7 @@ class PaperGlobalSummary(BaseModel):
         cls,
         chunk_set: PaperChunkSet,
         *,
-        producer: PaperSummaryProducer,
+        producer: PaperSummaryProducerType,
         summary: str,
         citations: Sequence[PaperCitationDraft],
         min_citations: int,
@@ -1133,36 +1158,13 @@ class PaperGlobalSummary(BaseModel):
         """
         if producer.input_chunk_set_id != chunk_set.id:
             raise ValueError("summary producer input does not match chunk set")
-        resolved: list[PaperCitation] = []
-        seen: set[tuple[int, int, str | None]] = set()
-        for draft in citations:
-            try:
-                chunk = chunk_set.chunks[draft.chunk_index]
-            except IndexError as exc:
-                raise PaperCitationValidationError(
-                    "paper summary cites an unknown chunk index"
-                ) from exc
-            pages = {span.page_number for span in chunk.source_spans}
-            if draft.page_number not in pages:
-                raise PaperCitationValidationError(
-                    "paper summary citation page is not owned by its chunk"
-                )
-            if draft.quote is not None and draft.quote not in chunk.text:
-                raise PaperCitationValidationError(
-                    "paper summary citation quote is not present in its chunk"
-                )
-            key = (draft.chunk_index, draft.page_number, draft.quote)
-            if key in seen:
-                continue
-            seen.add(key)
-            resolved.append(
-                PaperCitation(
-                    chunk_set_id=chunk_set.id,
-                    chunk_id=chunk.chunk_id,
-                    page_number=draft.page_number,
-                    quote=draft.quote,
-                )
+        resolved = list(
+            _resolve_paper_citations(
+                chunk_set,
+                citations,
+                subject="paper summary",
             )
+        )
         if len(resolved) < min_citations:
             raise PaperCitationValidationError(
                 "paper summary has fewer citations than min_summary_citations"
@@ -1199,6 +1201,573 @@ class PaperGlobalSummary(BaseModel):
         )
 
 
+class PaperAnnotationKind(str, Enum):
+    """Closed provenance class for a human-visible paper annotation."""
+
+    SOURCE_FACT = "source_fact"
+    CODEX_INTERPRETATION = "codex_interpretation"
+    USER_NOTE = "user_note"
+
+
+@dataclass(frozen=True)
+class PaperAnnotationDraft:
+    """One externally proposed annotation before identity and citation links."""
+
+    kind: PaperAnnotationKind
+    text: str
+    citations: tuple[PaperCitationDraft, ...]
+
+
+def _paper_annotation_content_hash(
+    kind: PaperAnnotationKind,
+    text: str,
+    citations: tuple[PaperCitation, ...],
+    *,
+    position: int,
+) -> str:
+    return _stable_hash(
+        {
+            "position": position,
+            "kind": kind.value,
+            "text": text,
+            "citations": [
+                citation.model_dump(mode="json") for citation in citations
+            ],
+        }
+    )
+
+
+def _paper_annotation_id(
+    source_revision_id: UUID,
+    *,
+    draft_content_hash: str,
+    position: int,
+    content_hash: str,
+) -> UUID:
+    return uuid5(
+        source_revision_id,
+        "quantmind:paper-annotation:"
+        f"{draft_content_hash}:{position}:{content_hash}",
+    )
+
+
+def _resolve_paper_citations(
+    chunk_set: PaperChunkSet,
+    citations: Sequence[PaperCitationDraft],
+    *,
+    subject: str,
+) -> tuple[PaperCitation, ...]:
+    resolved: list[PaperCitation] = []
+    seen: set[tuple[int, int, str | None]] = set()
+    for draft in citations:
+        if draft.chunk_index < 0:
+            raise PaperCitationValidationError(
+                f"{subject} cites an unknown chunk index"
+            )
+        try:
+            chunk = chunk_set.chunks[draft.chunk_index]
+        except IndexError as exc:
+            raise PaperCitationValidationError(
+                f"{subject} cites an unknown chunk index"
+            ) from exc
+        pages = {span.page_number for span in chunk.source_spans}
+        if draft.page_number not in pages:
+            raise PaperCitationValidationError(
+                f"{subject} citation page is not owned by its chunk"
+            )
+        if draft.quote is not None and draft.quote not in chunk.text:
+            raise PaperCitationValidationError(
+                f"{subject} citation quote is not present in its chunk"
+            )
+        key = (draft.chunk_index, draft.page_number, draft.quote)
+        if key in seen:
+            continue
+        seen.add(key)
+        resolved.append(
+            PaperCitation(
+                chunk_set_id=chunk_set.id,
+                chunk_id=chunk.chunk_id,
+                page_number=draft.page_number,
+                quote=draft.quote,
+            )
+        )
+    return tuple(resolved)
+
+
+class PaperAnnotation(BaseModel):
+    """One immutable cited annotation with an explicit provenance class."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    annotation_id: UUID
+    annotation_set_id: UUID
+    position: int = Field(ge=0)
+    kind: PaperAnnotationKind
+    text: str = Field(min_length=1)
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    citations: tuple[PaperCitation, ...] = Field(min_length=1)
+
+    @field_validator("text")
+    @classmethod
+    def _text_is_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("paper annotation text must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_identity(self) -> "PaperAnnotation":
+        expected_hash = _paper_annotation_content_hash(
+            self.kind,
+            self.text,
+            self.citations,
+            position=self.position,
+        )
+        if self.content_hash != expected_hash:
+            raise ValueError("paper annotation content hash mismatch")
+        return self
+
+
+def _paper_annotation_set_content_hash(
+    annotations: tuple[PaperAnnotation, ...],
+) -> str:
+    return _stable_hash(
+        [
+            {
+                "position": annotation.position,
+                "kind": annotation.kind.value,
+                "content_hash": annotation.content_hash,
+            }
+            for annotation in annotations
+        ]
+    )
+
+
+class PaperAnnotationSet(BaseModel):
+    """One independently versioned set of cited paper annotations."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: UUID
+    artifact_kind: Literal[PaperArtifactKind.ANNOTATION_SET] = (
+        PaperArtifactKind.ANNOTATION_SET
+    )
+    schema_version: Literal["1.0"] = "1.0"
+    source_revision_id: UUID
+    producer: PaperCitedDraftProducer
+    producer_config_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    annotations: tuple[PaperAnnotation, ...] = Field(min_length=1)
+    derived_from: tuple[ArtifactLocator, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_artifact(self) -> "PaperAnnotationSet":
+        producer_hash = _stable_hash(self.producer.model_dump(mode="json"))
+        if self.producer_config_hash != producer_hash:
+            raise ValueError("paper annotation-set producer hash mismatch")
+        expected_id = _paper_artifact_id(
+            self.source_revision_id,
+            self.artifact_kind,
+            producer_hash,
+        )
+        if self.id != expected_id:
+            raise ValueError(
+                "paper annotation-set ID does not match its producer"
+            )
+        if tuple(item.position for item in self.annotations) != tuple(
+            range(len(self.annotations))
+        ):
+            raise ValueError("paper annotations must have contiguous positions")
+        if len({item.annotation_id for item in self.annotations}) != len(
+            self.annotations
+        ):
+            raise ValueError("paper annotation IDs must be unique")
+        if any(item.annotation_set_id != self.id for item in self.annotations):
+            raise ValueError("paper annotation membership does not match set")
+        if any(
+            item.annotation_id
+            != _paper_annotation_id(
+                self.source_revision_id,
+                draft_content_hash=self.producer.draft_content_hash,
+                position=item.position,
+                content_hash=item.content_hash,
+            )
+            for item in self.annotations
+        ):
+            raise ValueError("paper annotation ID does not match its content")
+        if self.content_hash != _paper_annotation_set_content_hash(
+            self.annotations
+        ):
+            raise ValueError("paper annotation-set content hash mismatch")
+        if any(
+            locator.source_revision_id != self.source_revision_id
+            or locator.member_id is not None
+            for locator in self.derived_from
+        ):
+            raise ValueError(
+                "paper annotation-set lineage has an invalid locator"
+            )
+        if not any(
+            locator.source_revision_id == self.source_revision_id
+            and locator.artifact_kind == "paper_chunk_set"
+            and locator.artifact_id == self.producer.input_chunk_set_id
+            and locator.member_id is None
+            for locator in self.derived_from
+        ):
+            raise ValueError(
+                "paper annotation-set producer input is missing from lineage"
+            )
+        return self
+
+    @classmethod
+    def from_draft(
+        cls,
+        chunk_set: PaperChunkSet,
+        *,
+        producer: PaperCitedDraftProducer,
+        annotations: Sequence[PaperAnnotationDraft],
+    ) -> "PaperAnnotationSet":
+        """Resolve annotation citations and mint aggregate/member identity."""
+        if producer.input_chunk_set_id != chunk_set.id:
+            raise ValueError(
+                "annotation producer input does not match chunk set"
+            )
+        if not annotations:
+            raise ValueError("paper annotation set must not be empty")
+        producer_hash = _stable_hash(producer.model_dump(mode="json"))
+        artifact_id = _paper_artifact_id(
+            chunk_set.source_revision_id,
+            PaperArtifactKind.ANNOTATION_SET,
+            producer_hash,
+        )
+        built: list[PaperAnnotation] = []
+        for position, draft in enumerate(annotations):
+            text = draft.text.strip()
+            citations = _resolve_paper_citations(
+                chunk_set,
+                draft.citations,
+                subject="paper annotation",
+            )
+            if not citations:
+                raise PaperCitationValidationError(
+                    "paper annotation must have at least one citation"
+                )
+            content_hash = _paper_annotation_content_hash(
+                draft.kind,
+                text,
+                citations,
+                position=position,
+            )
+            built.append(
+                PaperAnnotation(
+                    annotation_id=_paper_annotation_id(
+                        chunk_set.source_revision_id,
+                        draft_content_hash=producer.draft_content_hash,
+                        position=position,
+                        content_hash=content_hash,
+                    ),
+                    annotation_set_id=artifact_id,
+                    position=position,
+                    kind=draft.kind,
+                    text=text,
+                    content_hash=content_hash,
+                    citations=citations,
+                )
+            )
+        values = tuple(built)
+        return cls(
+            id=artifact_id,
+            source_revision_id=chunk_set.source_revision_id,
+            producer=producer,
+            producer_config_hash=producer_hash,
+            content_hash=_paper_annotation_set_content_hash(values),
+            annotations=values,
+            derived_from=(
+                ArtifactLocator(
+                    source_revision_id=chunk_set.source_revision_id,
+                    artifact_id=chunk_set.id,
+                    artifact_kind="paper_chunk_set",
+                ),
+            ),
+        )
+
+
+def _validate_citations_against_chunk_set(
+    chunk_set: PaperChunkSet,
+    citations: Sequence[PaperCitation],
+    *,
+    subject: str,
+) -> None:
+    chunks = {chunk.chunk_id: chunk for chunk in chunk_set.chunks}
+    for citation in citations:
+        chunk = chunks.get(citation.chunk_id)
+        if chunk is None or citation.chunk_set_id != chunk_set.id:
+            raise ValueError(f"{subject} cites an unknown chunk")
+        pages = {span.page_number for span in chunk.source_spans}
+        if citation.page_number not in pages:
+            raise ValueError(f"{subject} citation page is not in chunk")
+        if citation.quote and citation.quote not in chunk.text:
+            raise ValueError(f"{subject} citation quote is not in chunk")
+
+
+class PaperTranslationProducer(BaseModel):
+    """Identity of one externally authored, code-validated translation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    orchestration: Literal["translation-draft-v1"] = "translation-draft-v1"
+    generator: Literal["codex-interactive", "external-interactive"]
+    model_label: str | None = None
+    source_language: Literal["en"] = "en"
+    target_language: Literal["ja"] = "ja"
+    draft_schema_version: Literal["1"] = "1"
+    draft_policy_version: Literal["paper-translation-draft-v1"] = (
+        "paper-translation-draft-v1"
+    )
+    instructions_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    draft_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+def _paper_translation_page_id(
+    translation_id: UUID,
+    *,
+    position: int,
+    page_number: int,
+    content_hash: str,
+) -> UUID:
+    return uuid5(
+        translation_id,
+        "quantmind:paper-translation-page:"
+        f"{position}:{page_number}:{content_hash}",
+    )
+
+
+def _paper_translation_page_content_hash(
+    *,
+    position: int,
+    page_number: int,
+    source_text_hash: str,
+    translated_text: str,
+) -> str:
+    return _stable_hash(
+        {
+            "position": position,
+            "page_number": page_number,
+            "source_text_hash": source_text_hash,
+            "translated_text": translated_text,
+        }
+    )
+
+
+class PaperTranslationPage(BaseModel):
+    """One page-aligned Japanese translation with exact source text."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    page_id: UUID
+    translation_id: UUID
+    source_revision_id: UUID
+    position: int = Field(ge=0)
+    page_number: int = Field(ge=1)
+    source_text: str
+    source_text_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    translated_text: str
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def _validate_page(self) -> "PaperTranslationPage":
+        if self.source_text_hash != _text_hash(self.source_text):
+            raise ValueError("paper translation source-text hash mismatch")
+        if self.source_text.strip() and not self.translated_text.strip():
+            raise ValueError("non-empty source page requires a translation")
+        if not self.source_text.strip() and self.translated_text.strip():
+            raise ValueError("empty source page translation must be empty")
+        expected_hash = _paper_translation_page_content_hash(
+            position=self.position,
+            page_number=self.page_number,
+            source_text_hash=self.source_text_hash,
+            translated_text=self.translated_text,
+        )
+        if self.content_hash != expected_hash:
+            raise ValueError("paper translation page content hash mismatch")
+        if self.page_id != _paper_translation_page_id(
+            self.translation_id,
+            position=self.position,
+            page_number=self.page_number,
+            content_hash=self.content_hash,
+        ):
+            raise ValueError("paper translation page ID mismatch")
+        return self
+
+
+def _paper_translation_content_hash(
+    producer: PaperTranslationProducer,
+    pages: tuple[PaperTranslationPage, ...],
+) -> str:
+    return _stable_hash(
+        {
+            "source_language": producer.source_language,
+            "target_language": producer.target_language,
+            "pages": [page.content_hash for page in pages],
+        }
+    )
+
+
+class PaperTranslation(ArtifactMeta):
+    """Self-contained page-aligned translation of one exact source revision."""
+
+    id: UUID
+    artifact_kind: Literal[PaperArtifactKind.TRANSLATION] = (
+        PaperArtifactKind.TRANSLATION
+    )
+    schema_version: Literal["1.0"] = "1.0"
+    source_revision_id: UUID
+    producer: PaperTranslationProducer
+    producer_config_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    pages: tuple[PaperTranslationPage, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_artifact(self) -> "PaperTranslation":
+        producer_hash = _stable_hash(self.producer.model_dump(mode="json"))
+        if self.producer_config_hash != producer_hash:
+            raise ValueError("paper translation producer hash mismatch")
+        expected_id = _paper_artifact_id(
+            self.source_revision_id,
+            self.artifact_kind,
+            producer_hash,
+        )
+        if self.id != expected_id:
+            raise ValueError("paper translation ID does not match its producer")
+        if tuple(page.position for page in self.pages) != tuple(
+            range(len(self.pages))
+        ):
+            raise ValueError("paper translation positions must be contiguous")
+        if tuple(page.page_number for page in self.pages) != tuple(
+            range(1, len(self.pages) + 1)
+        ):
+            raise ValueError("paper translation pages must be contiguous")
+        if len({page.page_id for page in self.pages}) != len(self.pages):
+            raise ValueError("paper translation page IDs must be unique")
+        if any(
+            page.translation_id != self.id
+            or page.source_revision_id != self.source_revision_id
+            for page in self.pages
+        ):
+            raise ValueError("paper translation page membership mismatch")
+        if self.content_hash != _paper_translation_content_hash(
+            self.producer, self.pages
+        ):
+            raise ValueError("paper translation content hash mismatch")
+        if self.source.content_hash not in (
+            None,
+            self.source_content_hash,
+        ):
+            raise ValueError("paper translation provenance hash mismatch")
+        return self
+
+    @classmethod
+    def from_draft(
+        cls,
+        source: PaperSourceRevision,
+        *,
+        producer: PaperTranslationProducer,
+        translated_pages: Sequence[str],
+    ) -> "PaperTranslation":
+        """Attach page translations to exact source text and mint identity."""
+        source_pages = source.parsed.pages
+        if len(translated_pages) != len(source_pages):
+            raise ValueError("paper translation must cover every source page")
+        producer_hash = _stable_hash(producer.model_dump(mode="json"))
+        translation_id = _paper_artifact_id(
+            source.id,
+            PaperArtifactKind.TRANSLATION,
+            producer_hash,
+        )
+        pages: list[PaperTranslationPage] = []
+        for position, (source_page, translated_text) in enumerate(
+            zip(source_pages, translated_pages, strict=True)
+        ):
+            normalized = translated_text.strip()
+            source_text_hash = _text_hash(source_page.text)
+            content_hash = _paper_translation_page_content_hash(
+                position=position,
+                page_number=source_page.page_number,
+                source_text_hash=source_text_hash,
+                translated_text=normalized,
+            )
+            pages.append(
+                PaperTranslationPage(
+                    page_id=_paper_translation_page_id(
+                        translation_id,
+                        position=position,
+                        page_number=source_page.page_number,
+                        content_hash=content_hash,
+                    ),
+                    translation_id=translation_id,
+                    source_revision_id=source.id,
+                    position=position,
+                    page_number=source_page.page_number,
+                    source_text=source_page.text,
+                    source_text_hash=source_text_hash,
+                    translated_text=normalized,
+                    content_hash=content_hash,
+                )
+            )
+        values = tuple(pages)
+        return cls(
+            id=translation_id,
+            as_of=source.as_of,
+            source=source.source,
+            source_title=source.title,
+            source_content_hash=source.parsed.source_hash,
+            source_revision_id=source.id,
+            producer=producer,
+            producer_config_hash=producer_hash,
+            content_hash=_paper_translation_content_hash(producer, values),
+            pages=values,
+        )
+
+
+class PaperTranslatedResult(BaseModel):
+    """Validated source plus one complete page-aligned translation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source_revision: PaperSourceRevision
+    translation: PaperTranslation
+
+    @model_validator(mode="after")
+    def _validate_cross_artifact_links(self) -> "PaperTranslatedResult":
+        if self.translation.source_revision_id != self.source_revision.id:
+            raise ValueError("paper translation belongs to another source")
+        if (
+            self.translation.source_content_hash
+            != self.source_revision.parsed.source_hash
+        ):
+            raise ValueError("paper translation source hash mismatch")
+        if len(self.translation.pages) != len(
+            self.source_revision.parsed.pages
+        ):
+            raise ValueError("paper translation does not cover its source")
+        for translated, source in zip(
+            self.translation.pages,
+            self.source_revision.parsed.pages,
+            strict=True,
+        ):
+            if (
+                translated.page_number != source.page_number
+                or translated.source_text != source.text
+            ):
+                raise ValueError("paper translation source text mismatch")
+        return self
+
+    @property
+    def source(self) -> PaperSourceRevision:
+        """Return the exact source revision using the concise flow name."""
+        return self.source_revision
+
+
 class PaperSemanticResult(BaseModel):
     """Validated V1 result containing source, chunks, and cited summary."""
 
@@ -1225,16 +1794,88 @@ class PaperSemanticResult(BaseModel):
         if chunk_set_locator not in self.global_summary.derived_from:
             raise ValueError("paper summary is missing chunk-set lineage")
 
-        chunks = {chunk.chunk_id: chunk for chunk in self.chunk_set.chunks}
-        for citation in self.global_summary.citations:
-            chunk = chunks.get(citation.chunk_id)
-            if chunk is None or citation.chunk_set_id != self.chunk_set.id:
-                raise ValueError("paper summary cites an unknown chunk")
-            pages = {span.page_number for span in chunk.source_spans}
-            if citation.page_number not in pages:
-                raise ValueError("paper summary citation page is not in chunk")
-            if citation.quote and citation.quote not in chunk.text:
-                raise ValueError("paper summary citation quote is not in chunk")
+        _validate_citations_against_chunk_set(
+            self.chunk_set,
+            self.global_summary.citations,
+            subject="paper summary",
+        )
+        return self
+
+    @property
+    def source(self) -> PaperSourceRevision:
+        """Return the exact source revision using a concise compatibility name."""
+        return self.source_revision
+
+    @property
+    def summary(self) -> PaperGlobalSummary:
+        """Return the global-summary artifact using a concise name."""
+        return self.global_summary
+
+
+class PaperAnnotatedResult(BaseModel):
+    """Validated cited draft result with summary and typed annotations."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source_revision: PaperSourceRevision
+    chunk_set: PaperChunkSet
+    global_summary: PaperGlobalSummary
+    annotation_set: PaperAnnotationSet
+
+    @model_validator(mode="after")
+    def _validate_cross_artifact_links(self) -> "PaperAnnotatedResult":
+        source_id = self.source_revision.id
+        if any(
+            artifact.source_revision_id != source_id
+            for artifact in (
+                self.chunk_set,
+                self.global_summary,
+                self.annotation_set,
+            )
+        ):
+            raise ValueError("paper artifacts do not share their source")
+        if (
+            self.global_summary.producer.input_chunk_set_id != self.chunk_set.id
+            or self.annotation_set.producer.input_chunk_set_id
+            != self.chunk_set.id
+        ):
+            raise ValueError(
+                "paper cited-draft artifacts use another chunk set"
+            )
+        if not isinstance(
+            self.global_summary.producer, PaperCitedDraftProducer
+        ):
+            raise ValueError(
+                "paper annotated summary is not from a cited draft"
+            )
+        if self.global_summary.producer != self.annotation_set.producer:
+            raise ValueError(
+                "paper cited-draft artifacts do not share a producer"
+            )
+
+        _validate_chunk_set_source(self.source_revision, self.chunk_set)
+        chunk_set_locator = ArtifactLocator(
+            source_revision_id=source_id,
+            artifact_id=self.chunk_set.id,
+            artifact_kind="paper_chunk_set",
+        )
+        if chunk_set_locator not in self.global_summary.derived_from:
+            raise ValueError("paper summary is missing chunk-set lineage")
+        if chunk_set_locator not in self.annotation_set.derived_from:
+            raise ValueError(
+                "paper annotation set is missing chunk-set lineage"
+            )
+        _validate_citations_against_chunk_set(
+            self.chunk_set,
+            self.global_summary.citations,
+            subject="paper summary",
+        )
+        for annotation in self.annotation_set.annotations:
+            _validate_citations_against_chunk_set(
+                self.chunk_set,
+                annotation.citations,
+                subject="paper annotation",
+            )
         return self
 
     @property
@@ -1257,5 +1898,17 @@ class LegacyPaper(TreeKnowledge):
     asset_classes: list[str] = Field(default_factory=list)
 
 
-PaperArtifact = PaperChunkSet | PaperGlobalSummary | PaperStructureTree
-ResolvedPaperArtifact = PaperArtifact | PaperChunk | TreeNode
+PaperArtifact = (
+    PaperChunkSet
+    | PaperGlobalSummary
+    | PaperAnnotationSet
+    | PaperStructureTree
+    | PaperTranslation
+)
+ResolvedPaperArtifact = (
+    PaperArtifact
+    | PaperChunk
+    | PaperAnnotation
+    | PaperTranslationPage
+    | TreeNode
+)

@@ -2,7 +2,7 @@
 
 ## Quick Summary
 
-- **Purpose**: Define canonical paper source, chunk, summary, structure, citation, and locator models.
+- **Purpose**: Define canonical paper source, chunk, summary, annotation, structure, translation, citation, and locator models.
 - **Read when**: Changing `quantmind.knowledge.paper`, stable paper identities, artifact lineage, or paper search resolution.
 - **Status**: Implemented by `quantmind.knowledge.paper` and persisted by `quantmind.library`.
 - **Core rule**: Source revisions are immutable anchors; derived artifacts are independently versioned and never own retrieval vectors.
@@ -26,9 +26,23 @@ Source-first paper handling separates four layers:
 | Exact source | `PaperSourceRevision` | `PaperAssetRef`, `PaperParsedPage`, `PaperParsedBlock` | Preserve fetched bytes, page-aware parser output, metadata, and visual evidence. |
 | Deterministic artifact | `PaperChunkSet` | `PaperChunk`, `PaperSourceSpan` | Record one exact chunking of the source before any summary call. |
 | Semantic artifact | `PaperGlobalSummary` | `PaperCitation` | Store one independently versioned model summary with resolvable chunk/page evidence. |
+| Annotation artifact | `PaperAnnotationSet` | `PaperAnnotation`, `PaperCitation` | Keep cited source facts, Codex interpretations, and cited user notes explicitly typed. |
 | Structural artifact | `PaperStructureTree` | `TreeNode`, `Citation` | Store one independently versioned natural-section hierarchy over exact source pages. |
+| Translation artifact | `PaperTranslation` | `PaperTranslationPage` | Store one complete English-to-Japanese reading aid aligned to exact physical pages. |
 
 `PaperSemanticResult` validates one compatible source, chunk set, and summary combination. It is a transfer result, not a fourth stored artifact.
+
+`PaperAnnotatedResult` extends that transfer value with one annotation set. It
+checks that every artifact names the same source revision and that every
+summary and annotation citation resolves through the included chunk set to an
+exact physical page and quote. Personal UI memos are deliberately not a
+canonical annotation; they live only in the UI sidecar.
+
+`PaperTranslatedResult` pairs the exact source with one `PaperTranslation` and
+rejects missing pages, page-number drift, source-hash drift, or English page
+text that differs from the source manifest. Every translation page contains
+both exact English source text and Japanese reading text. Translation text is
+not citation evidence, and human review state lives only in the UI sidecar.
 
 All models are frozen Pydantic values with `extra="forbid"`. Canonical values contain no embedding vectors, provider node objects, or storage handles.
 
@@ -40,6 +54,7 @@ IDs are generated and checked in code:
 - asset ID: UUIDv5 over source revision, asset kind, page, and asset content hash;
 - artifact ID: UUIDv5 over source revision, artifact kind, and producer configuration hash;
 - chunk ID: UUIDv5 over chunk-set ID, position, content hash, and source-span hash.
+- translation page ID: UUIDv5 over translation artifact, position, physical page, and page content hash.
 
 Producer configuration is canonical JSON with sorted keys before SHA-256 hashing. Chunk-set content hashes cover ordered chunk membership and spans. Summary content hashes cover summary prose and ordered citations.
 
@@ -71,11 +86,27 @@ Every chunk span is also checked against that manifest: its page must exist, its
 
 Changing any producer field creates a distinct artifact ID. Multiple chunk sets and summaries may coexist for one source revision. Loading a complete `PaperSemanticResult` without explicit artifact IDs is allowed only when one unambiguous linked pair exists.
 
+`PaperAnnotationSet` producer identity records an external cited-draft model
+label, policy version, instructions hash, complete draft hash, and exact input
+chunk-set ID. Annotation IDs and hashes are code-owned and cover kind, text,
+position, and ordered citations. Annotation sets create no retrieval
+projections in the initial local-search scope.
+
 `PaperStructureTree.producer` records model and prompt identity, the instructions hash, the bounded physical-page text input policy, and tree/output bounds. It deliberately records no splitter or chunk-set identity. Rechunking an unchanged source therefore does not create a different structure tree.
+
+`PaperTranslation.producer` records interactive generator label, fixed language
+pair, draft schema/policy, instructions hash, and complete draft hash. The
+artifact content hash covers languages and ordered page hashes. It has no chunk
+or embedding dependency, so a changed translation creates a new version while
+the source identity remains unchanged.
 
 ## Citation and Lineage Integrity
 
 A `PaperCitation` identifies the exact chunk set, chunk, page, and optional verbatim quote. `PaperSemanticResult` rejects citations to missing chunks, pages outside the cited chunk spans, or quotes absent from chunk text.
+
+`PaperAnnotationKind` distinguishes `source_fact`, `codex_interpretation`, and
+`user_note`. These labels state provenance category, not truth. All three kinds
+require at least one exact citation in cited-draft v1.
 
 `PaperGlobalSummary.derived_from` contains `ArtifactLocator` values. At least one locator must point to its producer's exact input chunk set, with the same source revision and no member ID. The library stores this relationship explicitly so lineage can be checked independently from the summary JSON.
 
@@ -88,8 +119,10 @@ Canonical paper models do not implement `embedding_text()` and do not select ret
 - one text-embedding target for the global summary;
 - one text-embedding target per paper chunk;
 - no aggregate target for a chunk set.
+- no target for an annotation set in the initial implementation.
+- no target for a translation in the initial implementation.
 
-`ArtifactLocator` addresses a source revision, artifact, artifact kind, and optional member. The optional source revision keeps the locator usable for legacy `BaseKnowledge` results; V1 paper locators always set it. `LocalKnowledgeLibrary.resolve()` returns the canonical summary, chunk set, chunk, knowledge item, or tree node selected by a locator.
+`ArtifactLocator` addresses a source revision, artifact, artifact kind, and optional member. The optional source revision keeps the locator usable for legacy `BaseKnowledge` results; V1 paper locators always set it. `LocalKnowledgeLibrary.resolve()` returns the canonical summary, chunk set, chunk, translation page, knowledge item, or tree node selected by a locator.
 
 `SearchProjection` is separate from the locator. It records the rebuildable projection kind, version, modality, model, dimensions, and content hash that produced a ranked `SemanticHit`.
 

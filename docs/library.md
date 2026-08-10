@@ -2,6 +2,84 @@
 
 `LocalKnowledgeLibrary` persists canonical QuantMind values in SQLite and ranks rebuildable text-embedding projections with a private LlamaIndex retriever. The canonical storage, transaction, financial-time, migration, and PageIndex boundaries live in the [local library design](../contexts/design/library/local.md).
 
+## API-key-free Interactive Paper Registration
+
+The cited-draft path separates interactive authorship from deterministic
+library work. Python never calls Codex: an operator prepares exact files, asks
+Codex in the repository task to write `draft.json`, and then validates and
+registers that file.
+
+Install the local-model dependencies and explicitly cache the one pinned model
+revision while network access is available:
+
+```bash
+uv pip install -e ".[full]"
+python scripts/cache_local_embedding_model.py \
+  --cache-dir /absolute/path/to/quantmind-models
+```
+
+Normal library and UI execution uses `local_files_only=True`; a cache miss
+fails closed and never falls back to a network download. The fixed identity is
+`intfloat/multilingual-e5-small@fd1525a9fd15316a2d503bf26ab031a61d056e98#e5-query-passage-v1`
+with 384 normalized dimensions. Documents receive the E5 `passage:` prefix and
+queries receive `query:`. There is no model selector, provider registry,
+multiple backend, hybrid search, reranker, or scheduler.
+
+Prepare one local or public HTTPS PDF, then follow the printed path to the
+[interactive draft contract](../contexts/usage/codex-paper-draft-v1.md):
+
+```bash
+python scripts/prepare_codex_paper.py \
+  --input /absolute/path/paper.pdf \
+  --workdir /absolute/path/paper-work
+```
+
+After Codex has saved `/absolute/path/paper-work/draft.json`, run the focused
+example. It finalizes without an LLM call, atomically registers source bytes,
+summary, annotations, vectors, and audit evidence, then closes, reopens, and
+searches in Japanese:
+
+```bash
+python examples/flows/paper_cited_draft.py \
+  --manifest /absolute/path/paper-work/manifest.json \
+  --draft /absolute/path/paper-work/draft.json \
+  --database /absolute/path/paper-library.sqlite3 \
+  --cache-dir /absolute/path/to/quantmind-models
+```
+
+See the complete [operator procedure](../contexts/usage/codex-paper-registration.md).
+
+## API-key-free Interactive Paper Translation
+
+Translation uses a second deterministic handoff. Preparation pins the exact
+PDF, parser identity, ordered page text, language pair, and policy hash. Codex
+is used only in the active repository conversation to write the JSON; Python
+and the UI never invoke Codex or another LLM.
+
+```bash
+python scripts/prepare_codex_translation.py \
+  --input /absolute/path/paper.pdf \
+  --workdir /absolute/path/translation-work
+```
+
+After `translation_draft.json` exists, validate and register all pages:
+
+```bash
+python examples/flows/paper_translation_draft.py \
+  --manifest /absolute/path/translation-work/translation_manifest.json \
+  --draft /absolute/path/translation-work/translation_draft.json \
+  --database /absolute/path/paper-library.sqlite3
+```
+
+`put_translation()` writes the exact source, one immutable
+`PaperTranslation`, normalized `PaperTranslationPage` members, and an
+idempotent audit record in one transaction. It creates no document embedding.
+`open_translation()` restores the self-contained artifact, whose members hold
+both exact English source text and Japanese reading text. Original English
+pages remain the only citation evidence. `get_paper_details()` and the catalog
+expose translation versions and counts; page review status belongs to the UI
+sidecar, not canonical knowledge.
+
 ## Store a Paper Flow Result
 
 Run `PaperFlow(PaperSemanticCfg(...)).build()` first, then explicitly store its complete result:
@@ -82,6 +160,22 @@ A `paper_summary` hit resolves to `PaperGlobalSummary`. A `paper_chunk_set` hit 
 
 Use `get_artifact(artifact_id)` when the aggregate ID is already known. Use `get_paper(source_revision_id, chunk_set_id=..., summary_id=...)` to reconstruct a compatible result. Artifact IDs may be omitted only when one unambiguous linked chunk-set/summary pair exists.
 
+For registered interactive results, use `get_annotated_paper(registration_id)`
+to reconstruct the exact source/chunk/summary/annotation bundle. The following
+read-only management APIs do not load the local model:
+
+- `list_papers(PaperCatalogQuery(...))` for bounded filters, sort, health, and
+  cursor pagination;
+- `get_paper_details(...)` for deep canonical and registration validation;
+- `get_paper_asset(...)` for hash-checked raw PDF or retained evidence bytes;
+- `list_registrations(...)` and `get_registration(...)` for immutable audit;
+- `inspect_library()` for fast source, search-ready, attention, broken, page,
+  annotation, and database-size counts.
+
+`SemanticQuery.source_revision_ids` is applied before ranking. The management
+UI uses it only after resolving human tags, collections, reading state, and
+stars in a separate sidecar database.
+
 The complete runnable path is [examples/flows/paper.py](../examples/flows/paper.py).
 
 ## Conventional Knowledge
@@ -109,3 +203,19 @@ python scripts/examples/build_ai_infrastructure_bundle.py
 The bundle's facts and short citations come directly from the [Compute Trends Across Three Eras of Machine Learning paper](https://arxiv.org/abs/2202.05924), [Microsoft's FY2025 AI-datacenter investment announcement](https://blogs.microsoft.com/on-the-issues/2025/01/03/the-golden-opportunity-for-american-ai/), and [NVIDIA's FY2026 Q1 results](https://investor.nvidia.com/news/press-release-details/2025/NVIDIA-Announces-Financial-Results-for-First-Quarter-Fiscal-2026/default.aspx).
 
 Missing IDs raise `KeyError`. Canonical payloads, linked rows, or asset metadata that no longer agree raise `RuntimeError` with stale-data context. Invalid vector bytes and inconsistent dimensions raise a corrupt-index `RuntimeError`; provider or query dimension mismatches raise `ValueError`.
+
+## Schema 7 Migration and Limits
+
+Opening a schema-5 or schema-6 database migrates it through schema 7. The 5→6
+step backfills the paper catalog; 6→7 adds translation registration audit
+without rewriting canonical payloads. Before
+opening an important database with new code, stop all writers, checkpoint or
+copy the SQLite database and side files, hash the backup, and rehearse the
+migration on the copy. There is no automatic downgrade, repair, delete, or
+re-embed operation.
+
+The initial local scope supports text PDFs with physical page evidence. It does
+not support OCR, HTML papers, DOI resolution, autonomous jobs, annotation
+embeddings, multiple local models, hybrid search, reranking, or ANN tuning.
+The management UI and its limitations are documented in
+[Paper Library UI](paper-library-ui.md).

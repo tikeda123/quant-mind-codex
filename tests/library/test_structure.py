@@ -28,8 +28,9 @@ class _FakeEmbeddingProvider:
         *,
         model: str,
         dimensions: int | None,
+        purpose: str,
     ) -> list[list[float]]:
-        del model
+        del model, purpose
         self.calls.append(tuple(texts))
         size = dimensions or 2
         return [[float(index + 1) for index in range(size)] for _ in texts]
@@ -69,7 +70,7 @@ class StructureTreeLibraryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(provider.calls, [])
         with sqlite3.connect(self.db_path) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 5)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 7)
             # A self-contained tree is stored on its own: no source revision and
             # no chunk set are required or present.
             self.assertEqual(
@@ -317,7 +318,7 @@ class SchemaMigrationTests(unittest.IsolatedAsyncioTestCase):
             with sqlite3.connect(path) as db:
                 self.assertEqual(
                     db.execute("PRAGMA user_version").fetchone()[0],
-                    5,
+                    7,
                 )
                 columns = {
                     row[1]

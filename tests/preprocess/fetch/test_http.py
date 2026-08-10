@@ -1,6 +1,7 @@
 """Tests for preprocess.fetch.http."""
 
 import asyncio
+import socket
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -74,6 +75,38 @@ class FetchUrlTests(unittest.IsolatedAsyncioTestCase):
             result = await fetch_url("https://example.com")
 
         self.assertEqual(result.content_type, "application/octet-stream")
+
+    async def test_public_only_validates_https_and_every_redirect(self):
+        public_dns = [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("93.184.216.34", 443),
+            )
+        ]
+        with (
+            respx.mock(assert_all_called=True) as router,
+            patch(
+                "asyncio.BaseEventLoop.getaddrinfo",
+                new=AsyncMock(return_value=public_dns),
+            ),
+        ):
+            router.get("https://example.com/start").mock(
+                return_value=httpx.Response(
+                    302,
+                    headers={"Location": "https://127.0.0.1/private"},
+                )
+            )
+            with self.assertRaisesRegex(ValueError, "non-global"):
+                await fetch_url(
+                    "https://example.com/start",
+                    public_only=True,
+                )
+
+        with self.assertRaisesRegex(ValueError, "HTTPS"):
+            await fetch_url("http://example.com/data", public_only=True)
 
 
 class FetchPolicyTests(unittest.IsolatedAsyncioTestCase):

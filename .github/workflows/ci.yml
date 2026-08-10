@@ -38,7 +38,7 @@ jobs:
         run: uv venv
 
       - name: Install project and development dependencies
-        run: uv sync --frozen --extra dev
+        run: uv sync --frozen --extra dev --extra ui
 
       - name: Run file-hygiene hooks
         run: |

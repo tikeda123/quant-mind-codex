@@ -17,7 +17,7 @@ Human-readable equivalent: root `CONTRIBUTING.md` (same steps, same order).
 
    ```bash
    uv venv && source .venv/bin/activate
-   uv pip install -e ".[dev]"
+   uv pip install -e ".[dev,ui]"
    ```
 
 3. Install the git hooks (pre-commit lint/format stage plus the pre-push

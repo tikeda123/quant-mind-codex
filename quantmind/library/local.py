@@ -10,18 +10,24 @@ from quantmind.knowledge import (
     ArtifactLocator,
     BaseKnowledge,
     Citation,
+    PaperAnnotatedResult,
     PaperArtifact,
     PaperChunkSet,
     PaperGlobalSummary,
     PaperSemanticResult,
     PaperSourceRevision,
     PaperStructureTree,
+    PaperTranslatedResult,
+    PaperTranslation,
     ResolvedPaperArtifact,
     TreeKnowledge,
     TreeNode,
 )
 from quantmind.library._internal.index_embeddings import (
+    _LOCAL_EMBEDDING_DIMENSIONS,
+    _LOCAL_EMBEDDING_MODEL,
     _EmbeddingProvider,
+    _LocalE5EmbeddingProvider,
     _OpenAIEmbeddingProvider,
 )
 from quantmind.library._internal.llamaindex_retriever import (
@@ -38,6 +44,13 @@ from quantmind.library._internal.retrieval_targets import (
 )
 from quantmind.library._internal.sqlite_store import _SQLiteStore
 from quantmind.library._types import (
+    PaperAssetPayload,
+    PaperCatalogPage,
+    PaperCatalogQuery,
+    PaperDetails,
+    PaperLibraryStats,
+    PaperRegistrationRecord,
+    PaperTranslationRegistrationRecord,
     SearchProjection,
     SemanticHit,
     SemanticQuery,
@@ -92,6 +105,33 @@ class LocalKnowledgeLibrary:
             embedding_provider=(
                 _embedding_provider or _OpenAIEmbeddingProvider()
             ),
+        )
+
+    @classmethod
+    async def open_local(
+        cls,
+        path: str | Path,
+        *,
+        cache_dir: str | Path | None = None,
+    ) -> Self:
+        """Open a library bound to the fixed offline multilingual E5 model.
+
+        Opening the database does not load model weights or perform network I/O.
+        The exact model revision must already exist in the configured cache when
+        the first document or query embedding is requested.
+
+        Args:
+            path: SQLite database path or ``":memory:"``.
+            cache_dir: Optional existing Hugging Face model cache directory.
+
+        Returns:
+            An open local library using normalized 384-dimensional vectors.
+        """
+        return await cls.open(
+            path,
+            embedding_model=_LOCAL_EMBEDDING_MODEL,
+            embedding_dimensions=_LOCAL_EMBEDDING_DIMENSIONS,
+            _embedding_provider=_LocalE5EmbeddingProvider(cache_dir=cache_dir),
         )
 
     async def put(self, item: BaseKnowledge | PaperStructureTree) -> None:
@@ -151,6 +191,7 @@ class LocalKnowledgeLibrary:
                     [target.text for target in affected],
                     model=self._embedding_model,
                     dimensions=self._embedding_dimensions,
+                    purpose="document",
                 )
                 generated = _coerce_provider_vectors(
                     provider_values,
@@ -175,6 +216,37 @@ class LocalKnowledgeLibrary:
         failure therefore leaves no partial source, artifact, lineage, or
         required projection records.
         """
+        await self._put_paper_bundle(result, register=False)
+
+    async def put_annotated_paper(
+        self, result: PaperAnnotatedResult
+    ) -> PaperRegistrationRecord:
+        """Atomically persist source, artifacts, vectors, and registration."""
+        registration = await self._put_paper_bundle(result, register=True)
+        assert registration is not None
+        return registration
+
+    async def put_translation(
+        self,
+        result: PaperTranslatedResult,
+    ) -> PaperTranslationRegistrationRecord:
+        """Persist a complete page translation without creating embeddings."""
+        async with self._lock:
+            store = self._store
+            if store is None:
+                raise RuntimeError("LocalKnowledgeLibrary is closed")
+            prepared = store.prepare_put_translation(result)
+            registration = store.put_translation(prepared)
+            self._index = None
+            return registration
+
+    async def _put_paper_bundle(
+        self,
+        result: PaperSemanticResult | PaperAnnotatedResult,
+        *,
+        register: bool,
+    ) -> PaperRegistrationRecord | None:
+        """Prepare vectors before one concrete SQLite bundle transaction."""
         async with self._lock:
             store = self._store
             if store is None:
@@ -224,6 +296,7 @@ class LocalKnowledgeLibrary:
                     [target.text for target in affected],
                     model=self._embedding_model,
                     dimensions=self._embedding_dimensions,
+                    purpose="document",
                 )
                 generated = _coerce_provider_vectors(
                     provider_values,
@@ -232,13 +305,25 @@ class LocalKnowledgeLibrary:
                 )
                 for target, vector in zip(affected, generated, strict=True):
                     vectors[target.target_id] = _encode_vector(vector)
-            store.put_paper(
-                prepared,
-                targets,
-                vectors,
-                embedding_model=self._embedding_model,
+            registration = (
+                store.put_annotated_paper(
+                    prepared,
+                    targets,
+                    vectors,
+                    embedding_model=self._embedding_model,
+                )
+                if register
+                else None
             )
+            if not register:
+                store.put_paper(
+                    prepared,
+                    targets,
+                    vectors,
+                    embedding_model=self._embedding_model,
+                )
             self._index = None
+            return registration
 
     async def put_structure_tree(self, tree: PaperStructureTree) -> None:
         """Persist one self-contained structure tree with no source or chunk set.
@@ -297,6 +382,137 @@ class LocalKnowledgeLibrary:
                 chunk_set_id=chunk_set_id,
                 summary_id=summary_id,
             )
+
+    async def get_annotated_paper(
+        self, registration_id: UUID
+    ) -> PaperAnnotatedResult:
+        """Return the exact annotated bundle named by a registration."""
+        async with self._lock:
+            store = self._store
+            if store is None:
+                raise RuntimeError("LocalKnowledgeLibrary is closed")
+            return store.get_annotated_paper(registration_id)
+
+    async def get_registration(
+        self, registration_id: UUID
+    ) -> PaperRegistrationRecord:
+        """Return one immutable registration audit record."""
+        async with self._lock:
+            store = self._store
+            if store is None:
+                raise RuntimeError("LocalKnowledgeLibrary is closed")
+            return store.get_registration(registration_id)
+
+    async def get_translation_registration(
+        self,
+        registration_id: UUID,
+    ) -> PaperTranslationRegistrationRecord:
+        """Return one immutable translation registration record."""
+        async with self._lock:
+            store = self._store
+            if store is None:
+                raise RuntimeError("LocalKnowledgeLibrary is closed")
+            return store.get_translation_registration(registration_id)
+
+    async def open_translation(
+        self,
+        translation_id: UUID,
+    ) -> PaperTranslation:
+        """Load one self-contained page-aligned translation artifact."""
+        async with self._lock:
+            store = self._store
+            if store is None:
+                raise RuntimeError("LocalKnowledgeLibrary is closed")
+            artifact = store.get_paper_artifact(translation_id)
+            if not isinstance(artifact, PaperTranslation):
+                raise KeyError(
+                    f"Paper artifact '{translation_id}' is not a translation"
+                )
+            return artifact
+
+    async def find_paper_source(self, content_hash: str) -> UUID | None:
+        """Find a stored source revision by its exact SHA-256 content hash."""
+        async with self._lock:
+            store = self._store
+            if store is None:
+                raise RuntimeError("LocalKnowledgeLibrary is closed")
+            return store.find_paper_source(content_hash)
+
+    async def list_papers(
+        self, query: PaperCatalogQuery | None = None
+    ) -> PaperCatalogPage:
+        """List paper sources without loading the embedding model."""
+        async with self._lock:
+            store = self._store
+            if store is None:
+                raise RuntimeError("LocalKnowledgeLibrary is closed")
+            return store.list_papers(query)
+
+    async def get_paper_details(
+        self,
+        source_revision_id: UUID,
+        *,
+        registration_id: UUID | None = None,
+    ) -> PaperDetails:
+        """Deep-load one source, its artifacts, and its audit history."""
+        async with self._lock:
+            store = self._store
+            if store is None:
+                raise RuntimeError("LocalKnowledgeLibrary is closed")
+            return store.get_paper_details(
+                source_revision_id,
+                registration_id=registration_id,
+            )
+
+    async def get_paper_asset(
+        self, source_revision_id: UUID, asset_id: UUID
+    ) -> PaperAssetPayload:
+        """Return validated exact bytes for one persisted source asset."""
+        async with self._lock:
+            store = self._store
+            if store is None:
+                raise RuntimeError("LocalKnowledgeLibrary is closed")
+            return store.get_paper_asset(source_revision_id, asset_id)
+
+    async def list_registrations(
+        self,
+        source_revision_id: UUID | None = None,
+        *,
+        limit: int = 100,
+    ) -> tuple[PaperRegistrationRecord, ...]:
+        """List newest registration records globally or for one source."""
+        async with self._lock:
+            store = self._store
+            if store is None:
+                raise RuntimeError("LocalKnowledgeLibrary is closed")
+            return store.list_registrations(
+                source_revision_id,
+                limit=limit,
+            )
+
+    async def list_translation_registrations(
+        self,
+        source_revision_id: UUID | None = None,
+        *,
+        limit: int = 100,
+    ) -> tuple[PaperTranslationRegistrationRecord, ...]:
+        """List newest translation registrations globally or by source."""
+        async with self._lock:
+            store = self._store
+            if store is None:
+                raise RuntimeError("LocalKnowledgeLibrary is closed")
+            return store.list_translation_registrations(
+                source_revision_id,
+                limit=limit,
+            )
+
+    async def inspect_library(self) -> PaperLibraryStats:
+        """Return fast source-level library statistics without embeddings."""
+        async with self._lock:
+            store = self._store
+            if store is None:
+                raise RuntimeError("LocalKnowledgeLibrary is closed")
+            return store.inspect_library()
 
     async def get_artifact(self, artifact_id: UUID) -> PaperArtifact:
         """Return one validated canonical paper artifact aggregate."""
@@ -370,6 +586,7 @@ class LocalKnowledgeLibrary:
                 [query.text],
                 model=self._embedding_model,
                 dimensions=self._embedding_dimensions,
+                purpose="query",
             )
             query_vectors = _coerce_provider_vectors(
                 provider_values,

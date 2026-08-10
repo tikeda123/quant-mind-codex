@@ -64,7 +64,7 @@ resurrect it into master.
 
 ```bash
 uv venv && source .venv/bin/activate
-uv pip install -e ".[dev]"
+uv pip install -e ".[dev,ui]"
 bash scripts/verify.sh              # deterministic required verification
 ```
 

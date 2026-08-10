@@ -54,7 +54,15 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import Generic, Literal, TypeVar, cast, overload
 
-from quantmind.configs import BaseFlowCfg, PaperSemanticCfg, PaperStructureCfg
+from quantmind.configs import (
+    BaseFlowCfg,
+    CitedPaperDraftInput,
+    PaperCitedDraftCfg,
+    PaperSemanticCfg,
+    PaperStructureCfg,
+    PaperTranslationDraftCfg,
+    PaperTranslationDraftInput,
+)
 from quantmind.configs.paper import (
     ArxivIdentifier,
     DoiIdentifier,
@@ -69,19 +77,30 @@ from quantmind.flows._paper_summary import (
     _PaperSummaryProvider,
     _summary_instructions_hash,
 )
+from quantmind.flows.paper._draft import (
+    _resolve_draft_annotations,
+    _resolve_draft_citations,
+    _validate_cited_paper_draft,
+)
 from quantmind.flows.paper._structure import (
     PaperStructureError,
     _AgentsPaperStructureProvider,
     _PaperStructureProvider,
     _structure_instructions_hash,
 )
+from quantmind.flows.paper._translation import (
+    _validate_paper_translation_draft,
+)
 from quantmind.knowledge import (
+    PaperAnnotatedResult,
+    PaperAnnotationSet,
     PaperAssetInput,
     PaperBoundingBox,
     PaperChunkingConfig,
     PaperChunkInput,
     PaperChunkSet,
     PaperCitationDraft,
+    PaperCitedDraftProducer,
     PaperGlobalSummary,
     PaperPageInput,
     PaperParsedBlock,
@@ -91,6 +110,9 @@ from quantmind.knowledge import (
     PaperStructureProducer,
     PaperStructureTree,
     PaperSummaryProducer,
+    PaperTranslatedResult,
+    PaperTranslation,
+    PaperTranslationProducer,
 )
 from quantmind.preprocess import (
     BoundingBox,
@@ -154,6 +176,24 @@ class PaperFlow(Generic[_ResultT]):
 
     @overload
     def __init__(
+        self: "PaperFlow[PaperTranslatedResult]",
+        cfg: PaperTranslationDraftCfg,
+        *,
+        _structure_provider: _PaperStructureProvider | None = None,
+        _summary_provider: _PaperSummaryProvider | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: "PaperFlow[PaperAnnotatedResult]",
+        cfg: PaperCitedDraftCfg,
+        *,
+        _structure_provider: _PaperStructureProvider | None = None,
+        _summary_provider: _PaperSummaryProvider | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
         self: "PaperFlow[PaperStructureTree]",
         cfg: PaperStructureCfg,
         *,
@@ -172,7 +212,7 @@ class PaperFlow(Generic[_ResultT]):
 
     @overload
     def __init__(
-        self: "PaperFlow[PaperStructureTree | PaperSemanticResult]",
+        self: "PaperFlow[PaperStructureTree | PaperSemanticResult | PaperAnnotatedResult | PaperTranslatedResult]",
         cfg: BaseFlowCfg,
         *,
         _structure_provider: _PaperStructureProvider | None = None,
@@ -200,7 +240,10 @@ class PaperFlow(Generic[_ResultT]):
         self._structure_provider = _structure_provider
         self._summary_provider = _summary_provider
 
-    async def build(self, input: PaperInput) -> _ResultT:
+    async def build(
+        self,
+        input: PaperInput | CitedPaperDraftInput | PaperTranslationDraftInput,
+    ) -> _ResultT:
         """Build one self-contained knowledge artifact for ``input``.
 
         Dispatches on the bound cfg **type**:
@@ -233,6 +276,28 @@ class PaperFlow(Generic[_ResultT]):
                 not meet the configured source-coverage policy.
         """
         cfg = self._cfg
+        if isinstance(cfg, PaperTranslationDraftCfg):
+            if not isinstance(input, PaperTranslationDraftInput):
+                raise TypeError(
+                    "PaperTranslationDraftCfg requires "
+                    "PaperTranslationDraftInput"
+                )
+            return cast(
+                _ResultT,
+                await self._build_translation_draft(input, cfg),
+            )
+        if isinstance(input, PaperTranslationDraftInput):
+            raise TypeError(
+                "PaperTranslationDraftInput requires PaperTranslationDraftCfg"
+            )
+        if isinstance(cfg, PaperCitedDraftCfg):
+            if not isinstance(input, CitedPaperDraftInput):
+                raise TypeError(
+                    "PaperCitedDraftCfg requires CitedPaperDraftInput"
+                )
+            return cast(_ResultT, await self._build_cited_draft(input, cfg))
+        if isinstance(input, CitedPaperDraftInput):
+            raise TypeError("CitedPaperDraftInput requires PaperCitedDraftCfg")
         if isinstance(cfg, PaperStructureCfg):
             return cast(_ResultT, await self._build_structure(input, cfg))
         if isinstance(cfg, PaperSemanticCfg):
@@ -240,7 +305,120 @@ class PaperFlow(Generic[_ResultT]):
         raise NotImplementedError(
             "PaperFlow.build does not support cfg type "
             f"{type(cfg).__name__!r}; only PaperStructureCfg (structure-tree "
-            "shape) and PaperSemanticCfg (chunk/summary shape) are wired."
+            "shape), PaperSemanticCfg (chunk/summary shape), and "
+            "PaperCitedDraftCfg (cited summary/annotations shape), and "
+            "PaperTranslationDraftCfg (page translation shape) are wired."
+        )
+
+    async def _build_translation_draft(
+        self,
+        input: PaperTranslationDraftInput,
+        cfg: PaperTranslationDraftCfg,
+    ) -> PaperTranslatedResult:
+        """Validate a complete page translation without calling an LLM."""
+        staged = await _validate_paper_translation_draft(
+            input.manifest_path,
+            input.draft_path,
+            cfg=cfg,
+        )
+        parsed = staged.parsed
+        source = PaperSourceRevision.from_parsed(
+            facts=staged.facts,
+            source_hash=parsed.source_hash,
+            parser_name=parsed.parser_name,
+            parser_version=parsed.parser_version,
+            cleanup_version=parsed.cleanup_version,
+            pages=_adapt_pages(parsed),
+        )
+        draft = staged.draft
+        producer = PaperTranslationProducer(
+            generator=draft.generator.kind,
+            model_label=draft.generator.model_label,
+            source_language=draft.source_language,
+            target_language=draft.target_language,
+            draft_policy_version=draft.generator.draft_policy_version,
+            instructions_hash=draft.generator.instructions_sha256,
+            draft_content_hash=staged.draft_content_hash,
+        )
+        translation = PaperTranslation.from_draft(
+            source,
+            producer=producer,
+            translated_pages=tuple(
+                page.translated_text for page in draft.pages
+            ),
+        )
+        return PaperTranslatedResult(
+            source_revision=source,
+            translation=translation,
+        )
+
+    async def _build_cited_draft(
+        self,
+        input: CitedPaperDraftInput,
+        cfg: PaperCitedDraftCfg,
+    ) -> PaperAnnotatedResult:
+        """Validate staged evidence and build cited artifacts without an LLM."""
+        staged = await _validate_cited_paper_draft(
+            input.manifest_path,
+            input.draft_path,
+            cfg=cfg,
+        )
+        parsed = staged.parsed
+        source = PaperSourceRevision.from_parsed(
+            facts=staged.facts,
+            source_hash=parsed.source_hash,
+            parser_name=parsed.parser_name,
+            parser_version=parsed.parser_version,
+            cleanup_version=parsed.cleanup_version,
+            pages=_adapt_pages(parsed),
+        )
+        parsed_chunks = chunk_parsed_document(
+            parsed,
+            config=SentenceSplitterConfig(
+                chunk_size=cfg.chunk_size,
+                chunk_overlap=cfg.chunk_overlap,
+            ),
+        )
+        chunk_set = PaperChunkSet.from_parsed_chunks(
+            source,
+            _adapt_chunks(parsed_chunks, source),
+            producer=PaperChunkingConfig(
+                splitter_version=version("llama-index-core"),
+                chunk_size=cfg.chunk_size,
+                chunk_overlap=cfg.chunk_overlap,
+            ),
+        )
+        draft = staged.draft
+        producer = PaperCitedDraftProducer(
+            input_chunk_set_id=chunk_set.id,
+            generator=draft.generator.kind,
+            model_label=draft.generator.model_label,
+            draft_policy_version=draft.generator.draft_policy_version,
+            instructions_hash=draft.generator.instructions_sha256,
+            draft_content_hash=staged.draft_content_hash,
+        )
+        summary = PaperGlobalSummary.from_draft(
+            chunk_set,
+            producer=producer,
+            summary=draft.summary.text,
+            citations=_resolve_draft_citations(
+                chunk_set, draft.summary.citations
+            ),
+            min_citations=cfg.min_summary_citations,
+            min_pages=cfg.min_summary_pages,
+        )
+        annotation_set = PaperAnnotationSet.from_draft(
+            chunk_set,
+            producer=producer,
+            annotations=_resolve_draft_annotations(
+                chunk_set, draft.annotations
+            ),
+        )
+        return PaperAnnotatedResult(
+            source_revision=source,
+            chunk_set=chunk_set,
+            global_summary=summary,
+            annotation_set=annotation_set,
         )
 
     async def _build_structure(

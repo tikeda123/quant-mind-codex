@@ -1,12 +1,13 @@
 """Reusable HTTP fetching with optional retry and host politeness policy."""
 
 import asyncio
+import ipaddress
 import random
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from types import TracebackType
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -91,18 +92,20 @@ class HttpFetcher:
         timeout: float = 30.0,
         max_bytes: int = 50_000_000,
         user_agent: str = DEFAULT_USER_AGENT,
+        public_only: bool = False,
     ) -> None:
         self.policy = policy
         self.timeout = timeout
         self.max_bytes = max_bytes
         self.user_agent = user_agent
+        self.public_only = public_only
         self._client: httpx.AsyncClient | None = None
         self._host_states: dict[str, _HostState] = {}
 
     async def __aenter__(self) -> "HttpFetcher":
         self._client = httpx.AsyncClient(
             timeout=self.timeout,
-            follow_redirects=True,
+            follow_redirects=not self.public_only,
         )
         return self
 
@@ -214,6 +217,14 @@ class HttpFetcher:
         if self._client is None:
             raise RuntimeError("HttpFetcher must be used as an async context")
 
+        if self.public_only:
+            return await self._stream_public_get(
+                url,
+                timeout=timeout,
+                max_bytes=max_bytes,
+                user_agent=user_agent,
+            )
+
         headers = {"User-Agent": user_agent}
         async with self._client.stream(
             "GET",
@@ -252,6 +263,65 @@ class HttpFetcher:
                 fetched_at=datetime.now(timezone.utc),
             )
 
+    async def _stream_public_get(
+        self,
+        url: str,
+        *,
+        timeout: float,
+        max_bytes: int,
+        user_agent: str,
+    ) -> Fetched:
+        """GET HTTPS while validating every redirect target before connect."""
+        if self._client is None:
+            raise RuntimeError("HttpFetcher must be used as an async context")
+        current_url = url
+        for _ in range(11):
+            await _validate_public_https_url(current_url)
+            async with self._client.stream(
+                "GET",
+                current_url,
+                headers={"User-Agent": user_agent},
+                timeout=timeout,
+                follow_redirects=False,
+            ) as response:
+                if response.is_redirect:
+                    location = response.headers.get("location")
+                    if not location:
+                        response.raise_for_status()
+                    assert location is not None
+                    current_url = urljoin(current_url, location)
+                    continue
+                response.raise_for_status()
+                chunks: list[bytes] = []
+                received = 0
+                async for chunk in response.aiter_bytes():
+                    received += len(chunk)
+                    if received > max_bytes:
+                        raise ValueError(
+                            f"response body exceeded max_bytes={max_bytes} "
+                            f"(received >= {received})"
+                        )
+                    chunks.append(chunk)
+                raw_content_type = response.headers.get(
+                    "content-type", "application/octet-stream"
+                )
+                content_type = raw_content_type.split(";", 1)[0].strip().lower()
+                captured = {
+                    key: value
+                    for key, value in response.headers.items()
+                    if key.lower() in _CAPTURED_HEADERS
+                }
+                return Fetched(
+                    bytes=b"".join(chunks),
+                    content_type=content_type,
+                    source_url=url,
+                    headers=captured,
+                    status_code=response.status_code,
+                    resolved_url=str(response.url),
+                    fetched_at=datetime.now(timezone.utc),
+                )
+        raise ValueError("public URL exceeded 10 redirects")
+
 
 async def fetch_url(
     url: str,
@@ -260,6 +330,7 @@ async def fetch_url(
     max_bytes: int = 50_000_000,
     user_agent: str = DEFAULT_USER_AGENT,
     fetch_policy: FetchPolicy | None = None,
+    public_only: bool = False,
 ) -> Fetched:
     """GET ``url`` with optional retry/backoff and host politeness policy.
 
@@ -272,8 +343,44 @@ async def fetch_url(
         timeout=timeout,
         max_bytes=max_bytes,
         user_agent=user_agent,
+        public_only=public_only,
     ) as fetcher:
         return await fetcher.fetch_url(url)
+
+
+async def _validate_public_https_url(url: str) -> None:
+    """Reject credentials and every non-global HTTPS destination."""
+    parsed = urlsplit(url)
+    if parsed.scheme.lower() != "https":
+        raise ValueError("public-only fetch requires an HTTPS URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("public-only fetch rejects URL credentials")
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ValueError("public-only fetch requires a hostname")
+    normalized_host = hostname.rstrip(".").lower()
+    if normalized_host == "localhost" or normalized_host.endswith(".localhost"):
+        raise ValueError("public-only fetch rejects localhost")
+    try:
+        literal = ipaddress.ip_address(normalized_host)
+    except ValueError:
+        loop = asyncio.get_running_loop()
+        addresses = await loop.getaddrinfo(
+            normalized_host,
+            parsed.port or 443,
+            type=0,
+        )
+        if not addresses:
+            raise ValueError(
+                "public-only fetch hostname did not resolve"
+            ) from None
+        resolved = {
+            ipaddress.ip_address(str(address[4][0])) for address in addresses
+        }
+    else:
+        resolved = {literal}
+    if any(not address.is_global for address in resolved):
+        raise ValueError("public-only fetch rejects non-global destinations")
 
 
 def _is_retryable(error: httpx.HTTPError) -> bool:

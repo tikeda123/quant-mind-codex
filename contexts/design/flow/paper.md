@@ -2,15 +2,17 @@
 
 ## Quick Summary
 
-- **Purpose**: Define how one exact PDF revision becomes a durable page-aware chunk set and a cited global summary.
-- **Read when**: Changing the paper build (`PaperFlow(PaperSemanticCfg).build`), paper inputs, summarization limits, citation validation, or the end-to-end paper verifier.
-- **Status**: Implemented by the config-bound `quantmind.flows.PaperFlow` — a `PaperSemanticCfg` selects this source-first shape — for PDF-backed arXiv, HTTP, and local inputs.
+- **Purpose**: Define how one exact PDF revision becomes page-aware cited artifacts or a complete page translation through bounded or deterministic paths.
+- **Read when**: Changing `PaperFlow`, paper inputs, cited or translation drafts, summarization limits, citation validation, or paper verification.
+- **Status**: Implemented by the config-bound `quantmind.flows.PaperFlow`; cfg type selects semantic, structure, external cited-draft, or translation-draft construction.
 - **Core rule**: Preserve and validate the source revision and chunk set before any model-generated summary is accepted.
 - **Canonical models**: [Paper source and artifact design](../knowledge/paper.md).
 
 ## Contents
 
 - [Contract](#contract)
+- [Interactive Cited Draft](#interactive-cited-draft)
+- [Interactive Translation Draft](#interactive-translation-draft)
 - [Execution Order](#execution-order)
 - [Source Revision](#source-revision)
 - [Chunk Set](#chunk-set)
@@ -34,6 +36,18 @@ PaperSemanticResult
 
 The result is source-first. It does not return a model-authored paper tree, and V1 does not define `PaperTree`. The source revision is an immutable anchor for independently versioned artifacts. A different splitter configuration may produce another chunk set for the same source; a different model, prompt, input chunk set, or output bound may produce another summary. These versions coexist instead of overwriting each other.
 
+`PaperFlow(PaperCitedDraftCfg()).build(CitedPaperDraftInput(...))` is a third,
+deterministic branch. It returns `PaperAnnotatedResult`, containing the same
+source/chunk/summary relationship plus one independently versioned
+`PaperAnnotationSet`. It does not construct an Agents SDK runner or call any
+model provider.
+
+`PaperFlow(PaperTranslationDraftCfg()).build(PaperTranslationDraftInput(...))`
+is a fourth deterministic branch. It returns `PaperTranslatedResult`, pairing
+the exact source revision with one independently versioned, self-contained
+`PaperTranslation`. It does not chunk, embed, construct an Agents SDK runner,
+or call a model provider.
+
 V1 accepts:
 
 | Input | Behavior |
@@ -43,6 +57,45 @@ V1 accepts:
 | `LocalFilePath` | Read the local file and require PDF content. |
 | `RawText` | Reject because it has no physical page evidence. |
 | `DoiIdentifier` | Reject until an exact open-PDF resolver exists. |
+
+## Interactive Cited Draft
+
+The operator first runs `scripts/prepare_codex_paper.py` against a local PDF or
+public HTTPS PDF. Preparation writes an exact `source.pdf` and an extra-forbid
+`manifest.json`, including source hash, size, parser identity, ordered physical
+page text hashes, and the draft-policy hash. Public URL preparation validates
+credentials, scheme, DNS addresses, and every redirect destination, then never
+refetches the URL.
+
+Codex may read those files interactively and write only `draft.json` under the
+[cited-draft policy](../../usage/codex-paper-draft-v1.md). QuantMind then
+re-reads and re-parses `source.pdf`, validates all manifest fields, chunks it
+deterministically, and resolves each page/quote pair to exactly one chunk. Zero
+or multiple matches fail closed. Drafts contain no canonical UUID, chunk
+position, source metadata, or timestamp.
+
+The finalizer creates a `PaperGlobalSummary` and `PaperAnnotationSet` with
+producer identities that include the exact draft hash and policy hash. Summary
+coverage remains at least three citations across two pages by default. Every
+annotation requires an exact citation. The resulting value remains independent
+of persistence; callers explicitly use `put_annotated_paper()`.
+
+## Interactive Translation Draft
+
+`scripts/prepare_codex_translation.py` writes `source.pdf` and
+`translation_manifest.json`, pinning the exact PDF hash and size, parser
+identity, every physical page's English text/hash/empty flag, the fixed `en` →
+`ja` pair, and the translation-policy hash. Interactive Codex writes only
+`translation_draft.json` under the
+[translation policy](../../usage/codex-paper-translation-v1.md). Python and
+the UI never call Codex or another LLM API.
+
+Finalization re-reads and re-parses the PDF, rejects parser or page drift, and
+requires exactly one ordered translation entry for every physical source page.
+Non-empty English pages require non-empty Japanese text; empty pages must stay
+empty. Code attaches the exact English page text, mints every ID and hash, and
+returns no partial result. `put_translation()` is a separate explicit,
+vectorless persistence step.
 
 ## Execution Order
 
@@ -152,4 +205,6 @@ It fetches exact arXiv revision `1706.03762v7`, parses at least 15 physical page
 - DOI-to-open-PDF resolution;
 - question answering over search results;
 - hidden or unbounded model calls;
-- implicit persistence from the paper build.
+- implicit persistence from the paper build;
+- calling Codex from Python, the UI, a scheduler, or an agent facade;
+- fuzzy citation matching, OCR, and HTML-paper ingestion.

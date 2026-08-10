@@ -21,8 +21,11 @@ Use this index when calling QuantMind as a library. These links point to the cur
 | Current operations, inputs, results, and sources | [Public component catalog](../../docs/README.md) |
 | Installation and common usage | [Root README usage](../../README.md#-usage-examples) |
 | Source-first paper flow | [Paper flow design](../design/flow/paper.md) |
+| Register a page-cited draft authored interactively | [Codex paper registration](codex-paper-registration.md) and [draft contract](codex-paper-draft-v1.md) |
+| Register a complete English-to-Japanese page translation | [Translation draft contract](codex-paper-translation-v1.md) |
 | News collection | [News design and behavior](../design/flow/news.md) |
 | Search local knowledge by meaning | [Library guide](../../docs/library.md) and [focused example](../../examples/library/README.md) |
+| Operate the local paper management UI | [Paper library UI guide](../../docs/paper-library-ui.md) |
 | Runnable operation examples | [`examples/flows/`](../../examples/flows/) |
 | Focused preprocessing examples | [`examples/preprocess/`](../../examples/preprocess/) |
 

@@ -197,6 +197,15 @@ asyncio.run(main())
 
 More examples live under [`examples/`](examples/); design contracts live under [`contexts/design/`](contexts/design/).
 
+#### API-key-free local paper workbench
+
+For interactive Codex drafting, a fixed local multilingual embedding model,
+atomic SQLite registration, and the optional six-view management UI, follow
+the [local library guide](docs/library.md#api-key-free-interactive-paper-registration)
+and [Paper Library UI guide](docs/paper-library-ui.md). Python and the UI never
+invoke Codex; `source.pdf`, `manifest.json`, and `draft.json` are the explicit
+handoff boundary.
+
 ### 🔬 Evaluation (In Design)
 
 > [!NOTE]

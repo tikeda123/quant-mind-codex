@@ -165,6 +165,11 @@ class _LlamaIndexRetriever:
             set(query.artifact_kinds) if query.artifact_kinds else None
         )
         source_kinds = set(query.source_kinds) if query.source_kinds else None
+        source_revision_ids = (
+            set(query.source_revision_ids)
+            if query.source_revision_ids is not None
+            else None
+        )
         required_tags = set(query.tags) if query.tags else None
         selected: list[_IndexRecord] = []
         for record in self._records:
@@ -178,6 +183,11 @@ class _LlamaIndexRetriever:
             if (
                 source_kinds is not None
                 and record.source_kind not in source_kinds
+            ):
+                continue
+            if (
+                source_revision_ids is not None
+                and record.source_revision_id not in source_revision_ids
             ):
                 continue
             if (

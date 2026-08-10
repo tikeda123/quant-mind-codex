@@ -44,7 +44,10 @@ dev = [
 full = [
     "marker-pdf>=0.2.0",
     "beautifulsoup4>=4.12.0",
-    "sentence-transformers>=2.2.0",
+    "sentence-transformers>=4.1,<6",
+]
+ui = [
+    "streamlit[pdf]>=1.49,<2",
 ]
 
 [tool.setuptools.packages.find]

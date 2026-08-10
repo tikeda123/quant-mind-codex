@@ -36,7 +36,9 @@ class _FakeEmbeddingProvider:
         *,
         model: str,
         dimensions: int | None,
+        purpose: str,
     ) -> list[list[float]]:
+        del purpose
         self.calls.append((model, dimensions, tuple(texts)))
         output: list[list[float]] = []
         for text in texts:
