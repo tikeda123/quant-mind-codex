@@ -6,6 +6,11 @@ loopback, uses public `quantmind.library` APIs, and stores mutable reading
 organization in a separate SQLite sidecar. It does not call Codex, OpenAI, or
 Hugging Face during normal operation.
 
+For the complete new-database procedure, including first-paper registration,
+translation, image annotations, verification, migration from a temporary
+database, and paired SQLite backup, follow the
+[database construction guide](paper-library-setup.md).
+
 ## Install and Start
 
 Install the UI and local-model extras, cache the fixed model once, and assign

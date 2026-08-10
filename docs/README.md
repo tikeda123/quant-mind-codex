@@ -84,11 +84,22 @@ keeps normal model loading local-only:
 python scripts/verify_paper_library_ui.py
 python scripts/verify_local_paper_e2e.py \
   --cache-dir /absolute/path/to/quantmind-models
+python scripts/migrate_paper_library.py \
+  --source-library-db /absolute/path/to/paper-library.sqlite3 \
+  --source-ui-db /absolute/path/to/paper-library-ui.sqlite3 \
+  --destination-root /absolute/path/to/new-runtime-root \
+  --model-cache /absolute/path/to/quantmind-models \
+  --query "portfolio covariance" \
+  --query "ポートフォリオの共分散"
 ```
 
-See the [local paper UI guide](paper-library-ui.md) for installation, paths,
-views, data ownership, security boundaries, and known limitations. Neither
-local check creates a new scheduled workflow or calls Codex from Python.
+See the [database construction guide](paper-library-setup.md) for the complete
+new-install, first-registration, translation, image-annotation, migration,
+verification, and backup runbook. The [local paper UI guide](paper-library-ui.md)
+covers views, data ownership, security boundaries, and known limitations.
+The migration command copies and verifies the complete canonical/sidecar pair
+without overwriting an existing destination. None of these commands creates a
+new scheduled workflow or calls Codex from Python.
 
 ## Adding a Public Operation or Source
 
